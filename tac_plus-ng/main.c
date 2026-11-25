@@ -300,6 +300,10 @@ static void periodics(struct context *ctx, int cur __attribute__((unused)))
     expire_dynamic_users(config.default_realm);
     expire_dynamic_acls(config.default_realm);
 
+#ifdef WITH_SSL
+    eap_expire_sessions(config.default_realm);
+#endif
+
 #ifdef WITH_DNS
     expire_dns(config.default_realm);
 #endif
@@ -313,7 +317,7 @@ static void periodics_ctx(struct context *ctx, int cur __attribute__((unused)))
 	    return;
 	}
 
-	if ((ctx->udp == BISTATE_YES) && (ctx->host->udp_timeout || ctx->dying) && (ctx->last_io + ctx->host->udp_timeout < io_now.tv_sec)) {
+	if ((ctx->udp == BISTATE_YES) && (ctx->host->udp_timeout || ctx->dying) && (ctx->last_io + ctx->host->udp_timeout < io_now.tv_sec) && (ctx->eap_hold_until < io_now.tv_sec)) {
 	    cleanup(ctx, ctx->sock);
 	    return;
 	}
@@ -334,7 +338,7 @@ static void periodics_ctx(struct context *ctx, int cur __attribute__((unused)))
 
     tac_script_expire_exec_context(ctx);
 
-    if (ctx->host->cleanup_when_idle && !ctx->out && !ctx->delayed && !RB_first(ctx->sessions) && !RB_first(ctx->shellctxcache))
+    if (ctx->host->cleanup_when_idle && !ctx->out && !ctx->delayed && !RB_first(ctx->sessions) && !RB_first(ctx->shellctxcache) && ctx->eap_hold_until < io_now.tv_sec)
 	cleanup(ctx, ctx->sock);
     else
 	io_sched_renew_proc(ctx->io, ctx, (void *) periodics_ctx);

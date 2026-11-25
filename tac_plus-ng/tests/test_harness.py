@@ -50,7 +50,7 @@ from unittest import mock
 
 from tactest import LINUX, SUPPRESSIONS, Closed, DaemonTestCase, ProtocolError, detect, sanitizers
 from tactest import daemon
-from tactest.daemon import proc_stat
+from tactest.daemon import Daemon, features_from_output, proc_stat
 
 POLICY = """
 	device single {
@@ -396,6 +396,35 @@ class ListenerPorts(DaemonTestCase):
         udp = [d.udp_port] + [d.ports[n] for n in ("u1", "u2")]
         self.assertEqual(len(set(tcp)), len(tcp), tcp)
         self.assertEqual(len(set(udp)), len(udp), udp)
+
+
+class HarnessScans(unittest.TestCase):
+    """The harness reads directives and features from text, not from comments."""
+
+    def test_commented_out_single_process_is_ignored(self):
+        cases = [
+            ("# single process = yes", False),
+            ("\t#single process = yes", False),
+            ("\t# single process = yes\n\tlisten { port = 49 }", False),
+            ("\t# single process = yes\n\t# single process = yes", False),
+            ("\tsingle process = yes", True),
+            ("single process=yes", True),
+            ("\t# single process = yes\n\tsingle process = yes", True),
+        ]
+        for spawnd, expected in cases:
+            with self.subTest(spawnd=spawnd):
+                d = Daemon(spawnd=spawnd)
+                self.addCleanup(d.remove)
+                self.assertIs(d.single_process, expected)
+
+    def test_libressl_counts_as_openssl(self):
+        for out, expected in (
+                ("tac_plus-ng version x/PCRE2/ARES 1.27.0/OpenSSL 3.0.13",
+                 {"pcre2", "openssl", "ares"}),
+                ("tac_plus-ng version x/PCRE2/LibreSSL 3.3.6", {"pcre2", "openssl"}),
+                ("tac_plus-ng version x", set())):
+            with self.subTest(out=out):
+                self.assertEqual(features_from_output(out), expected)
 
 
 class TestFiles(unittest.TestCase):

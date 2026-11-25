@@ -115,7 +115,8 @@ class CA:
                                     "keyUsage = critical, keyCertSign, cRLSign\n"
                                     "subjectKeyIdentifier = hash\n")
 
-    def issue(self, name, subject, server=False, san=None, days=2, expired=False, aki="keyid"):
+    def issue(self, name, subject, server=False, san=None, days=2, expired=False, aki="keyid",
+              eku="clientAuth", string_mask=None):
         """(certificate, key) for subject, e.g. "/CN=nas1"; san e.g. "DNS:nas1, IP:127.0.0.5".
 
         expired: valid for one day in 2020. "openssl x509 -req" takes no
@@ -126,12 +127,31 @@ class CA:
         serial without a keyIdentifier, None no AuthorityKeyIdentifier at
         all. The last two are how a certificate reaches the daemon with
         aki->keyid == NULL or no AKI.
+
+        eku is the extendedKeyUsage value: "clientAuth" by default for
+        client certificates, "serverAuth" for server=True. A different
+        value (for example "serverAuth" on a client certificate) makes a
+        negative test; None omits the extension, producing a certificate
+        with no EKU at all.
+
+        string_mask is the openssl "string_mask" for the subject, read as
+        UTF-8: "MASK:0x800", for example, encodes every subject attribute
+        as a BMPString. None keeps openssl's default.
         """
         key, csr, crt = self.path(name + ".key"), self.path(name + ".csr"), self.path(name + ".crt")
         self._newkey(key)
-        _openssl("req", "-batch", "-new", "-key", key, "-subj", subject, "-config", self._config(), "-out", csr)
+        req = ["req", "-batch", "-new", "-key", key, "-subj", subject]
+        cnf = self._config()
+        if string_mask:
+            req.append("-utf8")
+            cnf = self._ext(name + ".req.cnf", "[req]\ndistinguished_name = dn\nstring_mask = %s\n[dn]\n"
+                                               % string_mask)
+        _openssl(*req, "-config", cnf, "-out", csr)
+        if server and eku == "clientAuth":
+            eku = "serverAuth"
         ext = "basicConstraints = CA:false\nkeyUsage = critical, digitalSignature\n"
-        ext += "extendedKeyUsage = %s\n" % ("serverAuth" if server else "clientAuth")
+        if eku is not None:
+            ext += "extendedKeyUsage = %s\n" % eku
         ext += "authorityKeyIdentifier = %s\n" % (aki if aki else "none")
         if san:
             ext += "subjectAltName = %s\n" % san

@@ -65,6 +65,8 @@
 
 static const char rcsid[] __attribute__((used)) = "$Id$";
 
+#define RAD_PAK_SESSIONID(A) (((uint32_t) (A)->code << 8) | (uint32_t) (A)->identifier)
+
 static int write_packet(struct context *, tac_pak *);
 static tac_session *new_session(struct context *, tac_pak_hdr *, rad_pak_hdr *);
 
@@ -135,6 +137,9 @@ static tac_pak *new_rad_pak(tac_session *session, u_char code)
 #ifdef WITH_SSL
 	memcpy(pak->pak.rad.authenticator, session->radius_data->pak_in->authenticator, 16);
 	u_char *ma = data + session->radius_data->data_len - 18;
+	/* RFC 3579 3.2: the value octets are zero when the HMAC is computed.
+	   rad_strip_attribute() may leave older attribute bytes there. */
+	memset(ma + 2, 0, 16);
 	*ma++ = RADIUS_A_MESSAGE_AUTHENTICATOR;
 	*ma++ = 18;
 	u_int ma_len = 16;
@@ -443,6 +448,284 @@ void rad_send_acct_reply(tac_session *session)
     if (rad_send_reply(session, RADIUS_CODE_ACCOUNTING_RESPONSE))
 	cleanup(session->ctx, session->ctx->sock);
 }
+
+#ifdef WITH_SSL
+/*
+ * Remove every attribute of the given type from a RADIUS attribute buffer,
+ * preserving the order of the remaining attributes. Returns the new length.
+ * A malformed tail (which rad_check_failed() would have rejected on input)
+ * is preserved as-is.
+ */
+static size_t rad_strip_attribute(u_char *data, size_t len, u_char type)
+{
+    size_t in = 0, out = 0;
+
+    while (in + 2 <= len) {
+	size_t alen = data[in + 1];
+	if (alen < 2 || alen > len - in)
+	    break;
+	if (data[in] != type) {
+	    if (out != in)
+		memmove(data + out, data + in, alen);
+	    out += alen;
+	}
+	in += alen;
+    }
+    if (in < len) {
+	if (out != in)
+	    memmove(data + out, data + in, len - in);
+	out += len - in;
+    }
+    return out;
+}
+
+/*
+ * Remove the attributes that rad_send_eap_reply() adds or forbids, so the
+ * capacity checks and the MPPE writers see the same payload the NAS will.
+ * Reply-Message is removed only from Access-Accept/Access-Reject (RFC 3579
+ * 2.6.5); State is added by rad_send_eap_reply() to Access-Challenge.
+ */
+size_t rad_strip_eap_reply(tac_session *session, u_char code)
+{
+    struct radius_data *rd = session->radius_data;
+
+    if (!rd)
+	return 0;
+
+    rd->data_len = rad_strip_attribute(rd->data, rd->data_len, RADIUS_A_EAP_MESSAGE);
+    rd->data_len = rad_strip_attribute(rd->data, rd->data_len, RADIUS_A_STATE);
+    rd->data_len = rad_strip_attribute(rd->data, rd->data_len, RADIUS_A_MESSAGE_AUTHENTICATOR);
+    if (code == RADIUS_CODE_ACCESS_ACCEPT || code == RADIUS_CODE_ACCESS_REJECT)
+	rd->data_len = rad_strip_attribute(rd->data, rd->data_len, RADIUS_A_REPLY_MESSAGE);
+
+    return rd->data_len;
+}
+
+/*
+ * Effective length of the reply attribute buffer once the attributes that
+ * rad_send_eap_reply() removes are stripped: EAP-Message, State and
+ * Message-Authenticator always, Reply-Message for Access-Accept/Reject
+ * (RFC 3579 2.6.5). rad_attr_add() and profile scripts may have filled the
+ * buffer, so the capacity checks must use this value, not data_len.
+ */
+size_t rad_eap_effective_payload_len(tac_session *session, u_char code)
+{
+    struct radius_data *rd = session->radius_data;
+    size_t in = 0, out = 0, len;
+
+    if (!rd)
+	return 0;
+
+    len = rd->data_len;
+    while (in + 2 <= len) {
+	size_t alen = rd->data[in + 1];
+	u_char type = rd->data[in];
+
+	if (alen < 2 || alen > len - in)
+	    break;
+	if (type != RADIUS_A_EAP_MESSAGE && type != RADIUS_A_STATE &&
+	    type != RADIUS_A_MESSAGE_AUTHENTICATOR &&
+	    !((code == RADIUS_CODE_ACCESS_ACCEPT || code == RADIUS_CODE_ACCESS_REJECT) &&
+	      type == RADIUS_A_REPLY_MESSAGE))
+	    out += alen;
+	in += alen;
+    }
+    if (in < len)
+	out += len - in;	/* malformed tail, preserved by rad_strip_attribute() */
+
+    return out;
+}
+
+/*
+ * RFC 2865 5.33: Proxy-State attributes are added by proxies and MUST be
+ * copied unmodified, in order, into the reply. Walk the request attributes
+ * and either measure them (*dst == NULL) or copy them to dst. Returns 0 if
+ * the request attributes are malformed, else 1 with *len set.
+ */
+static int rad_copy_proxy_state(tac_session *session, u_char *dst, size_t *len)
+{
+    struct radius_data *rd = session ? session->radius_data : NULL;
+    rad_pak_hdr *pak;
+    u_char *p, *e;
+    size_t total = 0;
+
+    *len = 0;
+    if (!rd || !(pak = rd->pak_in))
+	return 1;
+    if (ntohs(pak->length) < RADIUS_HDR_SIZE)
+	return 0;
+
+    p = RADIUS_DATA(pak);
+    e = p + ntohs(pak->length) - RADIUS_HDR_SIZE;
+    while (p + 2 <= e) {
+	size_t alen = p[1];
+
+	if (alen < 2 || alen > (size_t) (e - p))
+	    return 0;
+	if (p[0] == RADIUS_A_PROXY_STATE) {
+	    if (dst)
+		memcpy(dst + total, p, alen);
+	    total += alen;
+	}
+	p += alen;
+    }
+    if (p != e)
+	return 0;
+    *len = total;
+    return 1;
+}
+
+/*
+ * Preflight an EAP reply: can the effective profile payload plus the
+ * EAP-Message attributes for eap_len bytes, optional Access-Challenge State,
+ * the echoed Proxy-State attributes and the Message-Authenticator
+ * reservation fit in one RADIUS packet?
+ * Mirrors rad_send_eap_reply() so the caller can avoid caching a reply that
+ * would have to be downgraded to EAP-Failure.
+ */
+int rad_eap_reply_fits(tac_session *session, u_char code, size_t eap_len, size_t state_len)
+{
+    size_t base, need = 0, i, proxy_len = 0;
+
+    if (!session || !session->radius_data)
+	return 0;
+    if (!rad_copy_proxy_state(session, NULL, &proxy_len))
+	return 0;
+
+    if (state_len > EAP_MAX_RADIUS_ATTR)
+	state_len = 0;		/* cannot encode a longer RADIUS State */
+
+    base = rad_eap_effective_payload_len(session, code);
+    if (base > RADIUS_MAX_ATTRIBUTES - RADIUS_MA_RESERVE)
+	return 0;
+    if (proxy_len > RADIUS_MAX_ATTRIBUTES - RADIUS_MA_RESERVE - base)
+	return 0;
+
+    for (i = 0; i < eap_len; i += EAP_MAX_RADIUS_ATTR)
+	need += 2 + (size_t) minimum(EAP_MAX_RADIUS_ATTR, (int) (eap_len - i));
+    if (state_len && code == RADIUS_CODE_ACCESS_CHALLENGE)
+	need += 2 + state_len;
+
+    return need <= RADIUS_MAX_ATTRIBUTES - RADIUS_MA_RESERVE - base - proxy_len;
+}
+
+/*
+ * Send an Access-Challenge/Accept/Reject carrying the echoed Proxy-State
+ * attributes, EAP-Message, optional State (Access-Challenge only), and the
+ * Message-Authenticator that new_rad_pak() appends. Reply-Message and State
+ * already in the attribute buffer are stripped from Access-Accept/Reject
+ * (RFC 3579 2.6.5). Proxy-State from the Access-Request is copied first, in
+ * order (RFC 2865 5.33); if it does not fit, the reply is downgraded to the
+ * best-effort EAP-Failure path instead of silently dropping it.
+ *
+ * rad_send_reply() calls cleanup_session(); do not touch session afterwards.
+ */
+void rad_send_eap_reply(tac_session *session, u_char code, const u_char *eap, size_t eap_len, const u_char *state, size_t state_len)
+{
+    struct radius_data *rd = session->radius_data;
+    size_t need = 0, room, i, proxy_len = 0;
+
+    if (!rd) {
+	report(session, LOG_ERR, ~0, "EAP reply without RADIUS data");
+	cleanup_session(session, 1);
+	return;
+    }
+
+    if (state_len > EAP_MAX_RADIUS_ATTR)
+	state_len = 0;		/* cannot encode a longer RADIUS State */
+
+    /* Profile scripts can add EAP-Message or State directly; remove them so
+       the reply has exactly one EAP packet and State only where we put it.
+       Reply-Message is forbidden with EAP-Message (RFC 3579 2.6.5). */
+    rd->data_len = rad_strip_eap_reply(session, code);
+
+    /* RFC 2865 5.33: echo the request's Proxy-State attributes in order. */
+    if (!rad_copy_proxy_state(session, NULL, &proxy_len)) {
+	report(session, LOG_ERR, ~0, "EAP reply: malformed request attributes");
+	goto best_effort;
+    }
+
+    /* rad_attr_add() may have filled the buffer close to the limit; guard
+       before subtracting the Message-Authenticator reservation, or the
+       unsigned subtraction would underflow. */
+    if (rd->data_len > RADIUS_MAX_ATTRIBUTES - RADIUS_MA_RESERVE) {
+	report(session, LOG_ERR, ~0, "EAP reply buffer already too large");
+	goto best_effort;
+    }
+
+    room = RADIUS_MAX_ATTRIBUTES - rd->data_len - RADIUS_MA_RESERVE;
+
+    if (eap_len && !eap)
+	goto best_effort;
+
+    for (i = 0; i < eap_len; i += EAP_MAX_RADIUS_ATTR)
+	need += 2 + (size_t) minimum(EAP_MAX_RADIUS_ATTR, (int) (eap_len - i));
+    if (state_len && code == RADIUS_CODE_ACCESS_CHALLENGE)
+	need += 2 + state_len;
+    need += proxy_len;
+
+    if (need > room) {
+	report(session, LOG_ERR, ~0, "EAP reply too large");
+	goto best_effort;
+    }
+
+    u_char *p = rd->data + rd->data_len;
+    if (proxy_len) {
+	if (!rad_copy_proxy_state(session, p, &proxy_len)) {
+	    /* Cannot happen after the measure above; fail closed anyway. */
+	    report(session, LOG_ERR, ~0, "EAP reply: malformed request attributes");
+	    goto best_effort;
+	}
+	p += proxy_len;
+	rd->data_len += proxy_len;
+    }
+    for (i = 0; i < eap_len; i += EAP_MAX_RADIUS_ATTR) {
+	size_t n = (size_t) minimum(EAP_MAX_RADIUS_ATTR, (int) (eap_len - i));
+	*p++ = RADIUS_A_EAP_MESSAGE;
+	*p++ = (u_char) (2 + n);
+	memcpy(p, eap + i, n);
+	p += n;
+	rd->data_len += 2 + n;
+    }
+    if (state_len && code == RADIUS_CODE_ACCESS_CHALLENGE) {
+	*p++ = RADIUS_A_STATE;
+	*p++ = (u_char) (2 + state_len);
+	memcpy(p, state, state_len);
+	p += state_len;
+	rd->data_len += 2 + state_len;
+    }
+
+    rad_send_reply(session, code);
+    return;
+
+best_effort:
+    /* Best effort: Proxy-State plus an EAP-Failure-only Access-Reject if it
+       fits. Keep the client's EAP identifier (RFC 5216 2.1.3) instead of
+       using 0. If even that does not fit, drop the reply rather than send a
+       reply that silently omits Proxy-State. */
+    {
+	u_char failure[4] = { EAP_CODE_FAILURE, eap && eap_len >= 2 ? eap[1] : 0, 0, 4 };
+	size_t failure_len = 2 + sizeof(failure);
+
+	if (!rad_copy_proxy_state(session, NULL, &proxy_len))
+	    proxy_len = 0;	/* malformed request: nothing to echo */
+	if (proxy_len + failure_len + RADIUS_MA_RESERVE <= RADIUS_MAX_ATTRIBUTES) {
+	    u_char *q;
+
+	    rd->data_len = 0;
+	    if (proxy_len)
+		rad_copy_proxy_state(session, rd->data, &proxy_len);
+	    q = rd->data + proxy_len;
+	    *q++ = RADIUS_A_EAP_MESSAGE;
+	    *q++ = (u_char) failure_len;
+	    memcpy(q, failure, sizeof(failure));
+	    rd->data_len = proxy_len + failure_len;
+	    rad_send_reply(session, RADIUS_CODE_ACCESS_REJECT);
+	} else
+	    cleanup_session(session, 1);
+    }
+}
+#endif				/* WITH_SSL */
 
 void rad_send_error(tac_session *session, uint32_t cause)
 {
@@ -976,6 +1259,7 @@ static int rad_check_failed(struct context *ctx, rad_pak_hdr *pak)
 // Consistency check: Do the attribute lengths sum up exactly?
 #ifdef WITH_SSL
     u_char *message_authenticator = NULL;
+    int eap_message = 0;
 #endif
     while (p < e) {
 	if (p + 1 == e || p[1] < 2)
@@ -998,6 +1282,8 @@ static int rad_check_failed(struct context *ctx, rad_pak_hdr *pak)
 #ifdef WITH_SSL
 	} else if (p[0] == RADIUS_A_MESSAGE_AUTHENTICATOR && p[1] == 18) {
 	    message_authenticator = p + 2;
+	} else if (p[0] == RADIUS_A_EAP_MESSAGE) {
+	    eap_message = 1;
 #endif
 	}
 	p += p[1];
@@ -1013,8 +1299,12 @@ static int rad_check_failed(struct context *ctx, rad_pak_hdr *pak)
     int message_authenticator_required = ctx->aaa_protocol != S_radius_dtls && ctx->aaa_protocol != S_radius_tls &&
 	(pak->code == RADIUS_CODE_ACCESS_REQUEST || pak->code == RADIUS_CODE_ACCESS_ACCEPT || pak->code == RADIUS_CODE_ACCESS_REJECT
 	 || pak->code == RADIUS_CODE_ACCESS_CHALLENGE);
-    if ((ctx->radius_1_1 == BISTATE_NO) && !message_authenticator && message_authenticator_required
-	&& !(ctx->host->bug_compatibility & CLIENT_BUG_NO_MESSAGE_AUTHENTICATOR)) {
+    /* RFC 3579 3.2: an Access-Request carrying EAP-Message needs a valid
+       Message-Authenticator on UDP/TCP regardless of bug compatibility. */
+    int eap_message_required = eap_message && ctx->aaa_protocol != S_radius_dtls && ctx->aaa_protocol != S_radius_tls;
+    if ((ctx->radius_1_1 == BISTATE_NO) && !message_authenticator &&
+	(eap_message_required ||
+	 (message_authenticator_required && !(ctx->host->bug_compatibility & CLIENT_BUG_NO_MESSAGE_AUTHENTICATOR)))) {
 	report(NULL, LOG_INFO_CONN, ~0, "%s did not set Message-Authenticator attribute", ctx->device_addr_ascii.txt);
 	ctx->reset_tcp = BISTATE_YES;
 	cleanup(ctx, -1);
@@ -1112,6 +1402,40 @@ static void rad_set_fields(tac_session *session)
     }
 }
 
+#ifdef WITH_SSL
+/*
+ * Hand an Access-Request carrying EAP-Message to eap.c. EAP is a multi-packet
+ * exchange, so the (code, identifier) retransmission shortcut in rad_read()
+ * must not apply. A stale session with the same session id is removed before
+ * the new one is created. Returns 1 once ctx->in has been detached into the
+ * session's memory pool; on 0 the caller still owns ctx->in.
+ */
+static int rad_eap_read(struct context *ctx, rad_pak_hdr *pak)
+{
+    tac_session *old = RB_lookup_session(ctx->sessions,
+					 ctx->radius_1_1 ? pak->token : RAD_PAK_SESSIONID(pak));
+    if (old)
+	/* Remove the stale session, but do not let cleanup_session() free the
+	   context: we still need ctx->in and ctx below to build the new
+	   session. */
+	cleanup_session(old, 0);
+
+    tac_session *session = new_session(ctx, NULL, pak);
+    if (!session)
+	return 0;
+
+    mem_attach(session->mem, mem_detach(ctx->mem, ctx->in));
+    ctx->in = NULL;
+
+    session->radius_data = mem_alloc(session->mem, sizeof(struct radius_data));
+    session->radius_data->pak_in = pak;
+    rad_set_fields(session);
+
+    eap_radius_request(session);
+    return 1;
+}
+#endif				/* WITH_SSL */
+
 void rad_read(struct context *ctx, int cur)
 {
     ssize_t len;
@@ -1187,7 +1511,16 @@ void rad_read(struct context *ctx, int cur)
     if (rad_check_failed(ctx, &ctx->in->pak.rad))
 	return;
 
-#define RAD_PAK_SESSIONID(A) (((uint32_t) (A)->code << 8) | (uint32_t) (A)->identifier)
+#ifdef WITH_SSL
+    if (pak->code == RADIUS_CODE_ACCESS_REQUEST &&
+	ctx->realm->eap == TRISTATE_YES && eap_has_message(pak)) {
+	if (!rad_eap_read(ctx, pak))
+	    mem_free(ctx->mem, &ctx->in);
+	ctx->hdroff = 0;
+	return;
+    }
+#endif
+
     tac_session *session = RB_lookup_session(ctx->sessions, ctx->radius_1_1 ? ctx->hdr.rad.token : RAD_PAK_SESSIONID(&ctx->hdr.rad));
 
     if (session) {
@@ -1351,6 +1684,11 @@ void cleanup_session(tac_session *session, int may_clean_ctx)
     mavis_ctx *mcx = lookup_mcx(ctx->realm);
 
 #ifdef WITH_DNS
+    /* rad_authen() may have scheduled a resume_session() timer while a
+       reverse lookup was pending. Cancel it before the session is freed,
+       or the timer would read the freed session (rad_eap_read() replaces
+       a stale session with the same RADIUS identifier). */
+    io_sched_del(ctx->io, session, (void *) resume_session);
     if (session->revmap_pending) {
 	tac_realm *r = session->ctx->realm;
 	while (r && !r->idc)
@@ -1373,7 +1711,8 @@ void cleanup_session(tac_session *session, int may_clean_ctx)
     mem_destroy(session->mem);
     mem_free(ctx->mem, &session);
     if (((ctx->host->cleanup_when_idle == TRISTATE_YES) && may_clean_ctx)
-	&& (!ctx->single_connection_flag || (die_when_idle && !RB_first(ctx->sessions) && !RB_first(ctx->shellctxcache)))) {
+	&& (!ctx->single_connection_flag || (die_when_idle && !RB_first(ctx->sessions) && !RB_first(ctx->shellctxcache)))
+	&& ctx->eap_hold_until < io_now.tv_sec) {
 	if (ctx->out || ctx->delayed)	// pending output
 	    ctx->dying = 1;
 	else
