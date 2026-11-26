@@ -6872,7 +6872,8 @@ static SSL_CTX *ssl_init(struct realm *r, int dtls, int use_tls_psk)
 		   terr ? terr : "");
 	    tac_exit(EX_CONFIG);
 	}
-	SSL_CTX_set_client_CA_list(ctx, SSL_load_client_CA_file(r->tls_cafile));
+	if (r->tls_cafile)
+	    SSL_CTX_set_client_CA_list(ctx, SSL_load_client_CA_file(r->tls_cafile));
 #if OPENSSL_VERSION_NUMBER >= 0x30000000
     if (r->tls_pkcs11_key_uri && r->tls_pkcs11_pin) {
 	UI_METHOD *ui_method = UI_create_method("pkcs#11"); // name has no relevance
