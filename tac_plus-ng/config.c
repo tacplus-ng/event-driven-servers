@@ -343,6 +343,10 @@ static char *type6_decrypt(struct type6_value *t)
     if (!dec)
 	return "type 6 value cannot be decrypted with the type6-key";
     size_t len = strlen(dec);
+    if (t->kind == TYPE6_PSK && len < 16) {
+	free(dec);
+	return "PSK is too short, a minimum of 128 bit is required";
+    }
     memcpy(value, dec, len + 1);	// the clear text is shorter than its type 6 form
     free(dec);
 

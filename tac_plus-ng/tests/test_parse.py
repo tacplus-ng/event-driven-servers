@@ -323,14 +323,16 @@ class PskMinimumLength(unittest.TestCase):
 
     def test_accepted(self):
         for key in ("hex " + "ab" * 16, "clear " + "x" * 16, "7 " + type7("x" * 16),
-                    'base64 "%s"' % base64.b64encode(b"x" * 16).decode()):
+                    'base64 "%s"' % base64.b64encode(b"x" * 16).decode(),
+                    "6 '_ifbOASUKMTdIGXHEXTBPDWF[`CeFOBY^GgMVcAbMQAAB'"):  # demoDemoDemoDemo
             with self.subTest(key=key):
                 code, out = self.parse(key)
                 self.assertEqual(code, 0, out)
 
     def test_refused(self):
         for key in ("hex " + "ab" * 15, "clear " + "x" * 15, "7 " + type7("x" * 15),
-                    'base64 "%s"' % base64.b64encode(b"x" * 15).decode()):
+                    'base64 "%s"' % base64.b64encode(b"x" * 15).decode(),
+                    "6 'ZKAb`S]hPDBAbXWZNJQ_BecWeZIMFYAAB'"):  # demoDemo
             with self.subTest(key=key):
                 code, out = self.parse(key)
                 self.assertGreater(code, 0, out)
