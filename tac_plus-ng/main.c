@@ -1814,12 +1814,6 @@ static void accept_control_common(int s, struct scm_data_accept_ext *sd_ext, soc
 		    complete_host(h);
 	    }
 	}
-	ctx->host = h;
-    }
-    if (!h) {
-	ctx->hint = "host unknown";
-	reject_conn(ctx, ctx->hint, __func__, __LINE__);
-	return;
     }
 
     ctx->rad_acct = (sd_ext->sd.flags & SCM_FLAG_RADACCT) ? BISTATE_YES : BISTATE_NO;
@@ -1872,6 +1866,11 @@ static void accept_control_common(int s, struct scm_data_accept_ext *sd_ext, soc
     ctx->host = h;
 
     set_ctx_info(ctx, sd_ext);
+
+    if (!h) {
+	reject_conn(ctx, "host unknown", __func__, __LINE__);
+	return;
+    }
 
     complete_host_mavis(ctx);
 }
@@ -1971,9 +1970,11 @@ static int dtls_ver_ok(u_int ver, u_char v)
 #define TLS_PEEK_LEN 6		// what accept_control_check_tls() reads of a record
 
 // 0x16 (handshake) or 0x17 (application data): a DTLS record of one of the versions, else 0
+// A ClientHello can have the DTLS 1.0 record version for any DTLS version (RFC 6347 4.1).
 static int dtls_record_type(u_int versions, u_char *buf, size_t len)
 {
-    if (len < TLS_PEEK_LEN || (buf[0] != 0x16 && buf[0] != 0x17) || buf[1] != 0xfe || !dtls_ver_ok(versions, buf[2]))
+    if (len < TLS_PEEK_LEN || (buf[0] != 0x16 && buf[0] != 0x17) || buf[1] != 0xfe
+	|| !(dtls_ver_ok(versions, buf[2]) || (buf[0] == 0x16 && buf[2] == (DTLS1_VERSION & 0xff))))
 	return 0;
     return buf[0];
 }
