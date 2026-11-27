@@ -1173,11 +1173,13 @@ int parse_int(struct sym *sym)
 	parse_error(sym, "expected an integer, but got '%s'", sym->buf);
     if (negative && shift)
 	parse_error(sym, "a negative integer takes no binary prefix");
-    if (errno || v > ((unsigned long long) INT_MAX >> shift))
+    unsigned long long max = negative ? (unsigned long long) INT_MAX + 1 : INT_MAX;
+    if (errno || v > (max >> shift))
 	parse_error(sym, "integer value too large");
-    int i = (int) (v << shift);
     sym_get(sym);
-    return negative ? -i : i;
+    if (negative)
+	return v > INT_MAX ? INT_MIN : -(int) v;
+    return (int) (v << shift);
 }
 
 u_int parse_uint(struct sym *sym)

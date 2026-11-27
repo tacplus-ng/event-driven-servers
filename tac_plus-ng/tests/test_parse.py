@@ -278,7 +278,7 @@ class IntegerValues(unittest.TestCase):
             return check(path)
 
     def test_accepted(self):
-        for value in ("1000", "0x10", "2k", "1G", "-1", "-5", "-0x10", "+7"):
+        for value in ("1000", "0x10", "2k", "1G", "-1", "-5", "-0x10", "+7", "2147483647", "-2147483648", "-0x80000000"):
             with self.subTest(value=value):
                 code, out = self.parse(value)
                 self.assertEqual(code, 0, out)
@@ -286,6 +286,8 @@ class IntegerValues(unittest.TestCase):
     def test_refused(self):
         for value, text in (("-1k", "a negative integer takes no binary prefix"),
                             ("2G", "integer value too large"),
+                            ("2147483648", "integer value too large"),
+                            ("-2147483649", "integer value too large"),
                             ("99999999999", "integer value too large"),
                             ("12abc", "expected an integer, but got '12abc'"),
                             ("0x", "expected an integer, but got '0x'")):
