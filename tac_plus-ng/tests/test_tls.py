@@ -1061,6 +1061,13 @@ class Pkcs11(TlsTestCase):
         code, out = self.token("file:" + self.ca.server[1], "file:" + self.ca.path("no-such.crt"))
         self.assertEqual(code, 78, out)
 
+    def test_pin_for_the_tls_and_the_dtls_context(self):
+        """ssl_init() erased the PIN after the key of the TLS context, and the DTLS context got an empty PIN."""
+        key = self.ca.path("server-enc.key")
+        tls._openssl("pkey", "-in", self.ca.server[1], "-aes256", "-passout", "pass:1234", "-out", key)
+        code, out = self.token("file:" + key, "file:" + self.ca.server[0])
+        self.assertEqual(code, 0, out)
+
     def handshake(self, body):
         d = self.start_daemon((body + '\ttls ca-file = "%s"\n' + POLICY) % self.ca.cert, listen={"tls": "tls = yes"})
         return self.connect_tls(daemon=d).pap("alice", "alicepw").ok

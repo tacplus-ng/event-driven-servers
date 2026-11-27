@@ -424,6 +424,10 @@ void complete_realm(tac_realm *r)
 	if (!r->dtls)
 	    r->dtls = ssl_init(r, 1, 0);
     }
+#if OPENSSL_VERSION_NUMBER >= 0x30000000
+    if (r->tls_pkcs11_pin)	// after the TLS and the DTLS context, which both use it
+	OPENSSL_cleanse(r->tls_pkcs11_pin, strlen(r->tls_pkcs11_pin));
+#endif
 #ifndef OPENSSL_NO_PSK
     if (r->use_tls_psk) {
 	if (!r->tls_psk)
@@ -6897,7 +6901,6 @@ static SSL_CTX *ssl_init(struct realm *r, int dtls, int use_tls_psk)
 	    report(NULL, LOG_ERR, ~0, "%s %d: Certificate and key don't match", __func__, __LINE__);
 	UI_destroy_method(ui_method);
 	EVP_PKEY_free(pkey);
-	OPENSSL_cleanse(r->tls_pkcs11_pin, strlen(r->tls_pkcs11_pin));
     }
 #endif
 	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
