@@ -41,6 +41,7 @@ import time
 import unittest
 
 from tactest import LINUX, SOURCE, DaemonTestCase, cpu_seconds, features, radius, tacacs, tls
+from tactest.daemon import parse_only
 
 TLS_REALM = """
 	tls cert-file = "%(server_crt)s"
@@ -1018,6 +1019,47 @@ class PeerCertValidationOfChildRealm(TlsTestCase):
 
     def test_explicit_any_in_the_child_realm_needs_a_client_certificate(self):
         self.assertRefused(lambda: self.connect_tls(client=None, listener="child-any", source="127.0.0.10"))
+
+
+PKCS11_PARSE = "id = spawnd { listen = { port = 4949 } }\nid = tac_plus-ng {\n%s}\n"
+
+
+class Pkcs11(TlsTestCase):
+    """tls pkcs11-key-uri and pkcs11-cert-uri, with file: URIs: OpenSSL opens these without a token.
+
+    A realm with a PKCS#11 directive makes the daemon load the OpenSSL
+    provider "pkcs11" (pkcs11-provider); skipped without it.
+    """
+
+    BODY = None
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        code, out = cls.parse_text("\ttls pkcs11-pin = 1234\n")
+        if code:
+            cls.ca.remove()
+            raise unittest.SkipTest("no OpenSSL provider pkcs11: %s" % out.strip())
+
+    @classmethod
+    def parse_text(cls, body):
+        path = cls.ca.path("pkcs11.cfg")
+        with open(path, "w") as f:
+            f.write(PKCS11_PARSE % body)
+        return parse_only(path)
+
+    def token(self, key_uri, cert_uri=None, files=True, pin="1234"):
+        crt, key = self.ca.server
+        body = '\ttls cert-file = "%s"\n\ttls key-file = "%s"\n' % (crt, key) if files else ""
+        body += '\ttls pkcs11-pin = %s\n\ttls pkcs11-key-uri = "%s"\n' % (pin, key_uri)
+        if cert_uri:
+            body += '\ttls pkcs11-cert-uri = "%s"\n' % cert_uri
+        return self.parse_text(body)
+
+    def test_certificate_uri_that_does_not_open_is_a_configuration_error(self):
+        """load_cert_from_token() went on with the NULL store of a failed OSSL_STORE_open(), and the parser crashed."""
+        code, out = self.token("file:" + self.ca.server[1], "file:" + self.ca.path("no-such.crt"))
+        self.assertEqual(code, 78, out)
 
 
 class PeerCertCnAddress(TlsTestCase):

@@ -6702,8 +6702,10 @@ static int ui_read_pin(UI *ui, UI_STRING *uis) {
 X509 *load_cert_from_token(const char *pkcs11_uri, UI_METHOD *ui_method, struct realm *r)
 {
     OSSL_STORE_CTX *store_ctx = OSSL_STORE_open(pkcs11_uri, ui_method, r, NULL, NULL);
-    if (!store_ctx)
-	report(NULL, LOG_ERR, ~0, "%s %d: OSSL_STORE_OPEN(): uri=%s", __func__, __LINE__, pkcs11_uri);
+    if (!store_ctx) {
+	report(NULL, LOG_ERR, ~0, "%s %d: OSSL_STORE_open(): uri=%s", __func__, __LINE__, pkcs11_uri);
+	tac_exit(EX_CONFIG);
+    }
 
     X509 *cert = NULL;
     while (!OSSL_STORE_eof(store_ctx)) {
