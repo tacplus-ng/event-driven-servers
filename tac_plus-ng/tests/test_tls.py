@@ -1078,6 +1078,11 @@ class Pkcs11(TlsTestCase):
                                        % (self.ca.server[0], self.ca.server[1])))
 
 
+    def test_realm_with_uris_only(self):
+        """complete_realm() made the TLS contexts only for "tls cert-file" or "tls key-file"."""
+        self.assertTrue(self.handshake('\ttls pkcs11-pin = 1234\n\ttls pkcs11-key-uri = "file:%s"\n\ttls pkcs11-cert-uri = "file:%s"\n'
+                                       % (self.ca.server[1], self.ca.server[0])))
+
 class PeerCertCnAddress(TlsTestCase):
     """An IP address as the CN of a client certificate selects a device only if it is the peer's address."""
 

@@ -418,7 +418,11 @@ void complete_realm(tac_realm *r)
 
     r->complete = 1;
 #ifdef WITH_SSL
-    if (r->tls_cert || r->tls_key) {
+    int has_key = r->tls_cert || r->tls_key;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000
+    has_key |= r->tls_pkcs11_key_uri != NULL;
+#endif
+    if (has_key) {
 	if (!r->tls)
 	    r->tls = ssl_init(r, 0, 0);
 	if (!r->dtls)
