@@ -2152,13 +2152,13 @@ mavis user filter = __internal__username_acl__ </screen>
           <listitem>
             <para><literal>tls psk =</literal> ( <literal>yes</literal> | <literal>no</literal> )</para>
             <para>This enables PSK support at realm level, if supported by your OpenSSL version. Please note that PSK and cert-based authentication are mutually exclusive in OpenSSL, and a dedicated listener configuration with <literal>tls psk = yes</literal> in <emphasis role="bold">spawnd</emphasis> context might be required. Exception: For TLS1.3, <emphasis role="bold">tac_plus-ng</emphasis>will permit for PSK and certificate authentication on the same port by evaluating the initial ClientHello message.</para>
-            <para>PSK identity and key can be declared at device or realm level:</para>
+            <para>PSK identity and key can be declared at device or realm level. A PSK must have at least 128 bit (16 bytes), in every form of the key:</para>
             <screen xml:space="preserve">tls psk id = myid
-#tls psk key = clear demoDemo # plain text
-#tls psk key = 6 'FFM^eVF\gQS^ZeW`TYeaHeD^eKPMgXAAB' # type 6, requires master key
-#tls psk key = 7 2703130E0E725C555C # type 7
-#tls psk key = base64 'ZGVtb0RlbW9EZW1vCg==' # base64
-tls psk key = 0123456789abcdef # hex</screen>
+#tls psk key = clear demoDemoDemoDemo # plain text
+#tls psk key = 6 '_ifbOASUKMTdIGXHEXTBPDWF[`CeFOBY^GgMVcAbMQAAB' # type 6, here with "type6-key = demo"
+#tls psk key = 7 0202015604220A2C436A0C140A33170603 # type 7
+#tls psk key = base64 'ZGVtb0RlbW9EZW1vRGVtbw==' # base64
+tls psk key = 0123456789abcdef0123456789abcdef # hex</screen>
           </listitem>
           <listitem>
             <para>
