@@ -39,7 +39,6 @@
 
 #include "headers.h"
 #include "misc/md5crypt.h"
-#include <crypt.h>
 #include <utime.h>
 
 static const char rcsid[] __attribute__((used)) = "$Id$";
