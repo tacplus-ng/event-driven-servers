@@ -983,6 +983,43 @@ class PeerCertSanValidation(TlsTestCase):
         self.assertEqual(self.device("xr_address", "127.0.0.10"), "localhost")
 
 
+class PeerCertValidationOfChildRealm(TlsTestCase):
+    """tls.peer.cert.validation: a child realm without the setting takes the value of its parent realm.
+
+    complete_realm() copied the parent value only for a child value of
+    "any": a child realm without the setting kept no value, and the
+    daemon refused every client certificate for the devices of that
+    realm. An explicit "any" in the child got the parent value instead.
+    """
+
+    LISTEN = {"child": "tls = yes realm = child", "child-any": "tls = yes realm = child-any"}
+    BODY = TLS_REALM + POLICY + """
+	realm child {
+		device childnas.tactest {
+			address = 127.0.0.11
+			key = childkey
+		}
+	}
+	realm open {
+		tls.peer.cert.validation = none
+		realm child-any {
+			tls.peer.cert.validation = any
+			device childlocal {
+				address = 127.0.0.10
+				key = childkey
+			}
+		}
+	}
+"""
+    CLIENTS = {"childnas": "/CN=childnas.tactest"}
+
+    def test_child_realm_without_the_setting_takes_a_client_certificate(self):
+        self.assertTrue(self.connect_tls("childnas", listener="child", source="127.0.0.11").pap("alice", "alicepw").ok)
+
+    def test_explicit_any_in_the_child_realm_needs_a_client_certificate(self):
+        self.assertRefused(lambda: self.connect_tls(client=None, listener="child-any", source="127.0.0.10"))
+
+
 class PeerCertCnAddress(TlsTestCase):
     """An IP address as the CN of a client certificate selects a device only if it is the peer's address."""
 

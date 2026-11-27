@@ -479,9 +479,9 @@ void complete_realm(tac_realm *r)
 	RS(alpn_vec, NULL);
 	RS(alpn_vec_len, 0);
 	RS(tls_accept_expired, TRISTATE_DUNNO);
-	RS(default_host->tls_peer_cert_validation, S_any);
-	RS(default_host->tls_peer_cert_cn_validation, TRISTATE_YES);
-	RS(default_host->tls_peer_cert_san_validation, TRISTATE_YES);
+	RS(default_host->tls_peer_cert_validation, S_unknown);
+	RS(default_host->tls_peer_cert_cn_validation, TRISTATE_DUNNO);
+	RS(default_host->tls_peer_cert_san_validation, TRISTATE_DUNNO);
 	RS(tls_psk_hint, NULL);
 	RS(tls_cipher_suites, NULL);
 	RS(tls_psk_dhe_groups, NULL);
