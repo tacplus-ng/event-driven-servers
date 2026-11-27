@@ -485,13 +485,14 @@ if ($cctest =~ /clang/) {
 
 if (defined $DEFS{"CC_GCC"}) {
 	$DEFS{"CFLAGS"} = "-Wall -W -Wno-strict-prototypes -Wno-implicit-fallthrough";
-	$DEFS{"CFLAGS"} .= " -fstack-protector-strong -D_FORTIFY_SOURCE=3";
+	$DEFS{"CFLAGS"} .= " -fstack-protector-strong";
 	if (exists $DEFS{'ASAN'}) {
 		$DEFS{"CFLAGS"} .= " -g";
 		$DEFS{"CC"} .= " -fsanitize=address";
 	}
 	if (!exists $DEFS{'DEBUG'} && !exists $DEFS{'GGDB'} && !exists $DEFS{'ASAN'}) {
-		$DEFS{"CFLAGS"} .= " -O2";
+		# glibc warns about _FORTIFY_SOURCE without optimization, and -Werror makes that an error
+		$DEFS{"CFLAGS"} .= " -O2 -D_FORTIFY_SOURCE=3";
 	} else {
 		$DEFS{"CFLAGS"} .= " -O0";
 	}
