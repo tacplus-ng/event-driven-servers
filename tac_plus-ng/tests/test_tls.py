@@ -980,7 +980,7 @@ class PeerCertSanValidation(TlsTestCase):
         self.assertEqual(self.device("own_address", "127.0.0.9"), "checked")
 
     def test_by_default_the_ip_san_of_another_device_selects_nothing(self):
-        """localhost (127.0.0.0/8) validates by default since 2534c96: the SAN is not the peer's address."""
+        """Without "tls.peer.cert.san.validation = yes" the daemon skips IP address SANs: localhost (127.0.0.0/8) answers."""
         self.assertEqual(self.device("xr_address", "127.0.0.10"), "localhost")
 
 
