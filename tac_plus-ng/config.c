@@ -343,6 +343,10 @@ static char *type6_decrypt(struct type6_value *t)
     if (!dec)
 	return "type 6 value cannot be decrypted with the type6-key";
     size_t len = strlen(dec);
+    if (t->kind == TYPE6_PSK && len < 16) {
+	free(dec);
+	return "PSK is too short, a minimum of 128 bit is required";
+    }
     memcpy(value, dec, len + 1);	// the clear text is shorter than its type 6 form
     free(dec);
 
@@ -414,12 +418,20 @@ void complete_realm(tac_realm *r)
 
     r->complete = 1;
 #ifdef WITH_SSL
-    if (r->tls_cert || r->tls_key) {
+    int has_key = r->tls_cert || r->tls_key;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000
+    has_key |= r->tls_pkcs11_key_uri != NULL;
+#endif
+    if (has_key) {
 	if (!r->tls)
 	    r->tls = ssl_init(r, 0, 0);
 	if (!r->dtls)
 	    r->dtls = ssl_init(r, 1, 0);
     }
+#if OPENSSL_VERSION_NUMBER >= 0x30000000
+    if (r->tls_pkcs11_pin)	// after the TLS and the DTLS context, which both use it
+	OPENSSL_cleanse(r->tls_pkcs11_pin, strlen(r->tls_pkcs11_pin));
+#endif
 #ifndef OPENSSL_NO_PSK
     if (r->use_tls_psk) {
 	if (!r->tls_psk)
@@ -475,9 +487,9 @@ void complete_realm(tac_realm *r)
 	RS(alpn_vec, NULL);
 	RS(alpn_vec_len, 0);
 	RS(tls_accept_expired, TRISTATE_DUNNO);
-	RS(default_host->tls_peer_cert_validation, S_any);
-	RS(default_host->tls_peer_cert_cn_validation, TRISTATE_YES);
-	RS(default_host->tls_peer_cert_san_validation, TRISTATE_YES);
+	RS(default_host->tls_peer_cert_validation, S_unknown);
+	RS(default_host->tls_peer_cert_cn_validation, TRISTATE_DUNNO);
+	RS(default_host->tls_peer_cert_san_validation, TRISTATE_DUNNO);
 	RS(tls_psk_hint, NULL);
 	RS(tls_cipher_suites, NULL);
 	RS(tls_psk_dhe_groups, NULL);
@@ -6698,8 +6710,10 @@ static int ui_read_pin(UI *ui, UI_STRING *uis) {
 X509 *load_cert_from_token(const char *pkcs11_uri, UI_METHOD *ui_method, struct realm *r)
 {
     OSSL_STORE_CTX *store_ctx = OSSL_STORE_open(pkcs11_uri, ui_method, r, NULL, NULL);
-    if (!store_ctx)
-	report(NULL, LOG_ERR, ~0, "%s %d: OSSL_STORE_OPEN(): uri=%s", __func__, __LINE__, pkcs11_uri);
+    if (!store_ctx) {
+	report(NULL, LOG_ERR, ~0, "%s %d: OSSL_STORE_open(): uri=%s", __func__, __LINE__, pkcs11_uri);
+	tac_exit(EX_CONFIG);
+    }
 
     X509 *cert = NULL;
     while (!OSSL_STORE_eof(store_ctx)) {
@@ -6872,7 +6886,8 @@ static SSL_CTX *ssl_init(struct realm *r, int dtls, int use_tls_psk)
 		   terr ? terr : "");
 	    tac_exit(EX_CONFIG);
 	}
-	SSL_CTX_set_client_CA_list(ctx, SSL_load_client_CA_file(r->tls_cafile));
+	if (r->tls_cafile)
+	    SSL_CTX_set_client_CA_list(ctx, SSL_load_client_CA_file(r->tls_cafile));
 #if OPENSSL_VERSION_NUMBER >= 0x30000000
     if (r->tls_pkcs11_key_uri && r->tls_pkcs11_pin) {
 	UI_METHOD *ui_method = UI_create_method("pkcs#11"); // name has no relevance
@@ -6880,22 +6895,16 @@ static SSL_CTX *ssl_init(struct realm *r, int dtls, int use_tls_psk)
 	EVP_PKEY *pkey = load_key_from_token(r->tls_pkcs11_key_uri, ui_method, r);
 	if (r->tls_pkcs11_cert_uri) {
 	    X509 *cert = load_cert_from_token(r->tls_pkcs11_cert_uri, ui_method, r);
-	    OPENSSL_cleanse(r->tls_pkcs11_pin, strlen(r->tls_pkcs11_pin));
-	    if (!cert) {
-		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_certificate", __func__, __LINE__);
-		tac_exit(EX_CONFIG);
-	    }
 	    if (SSL_CTX_use_certificate(ctx, cert) <= 0)
 		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_certificate", __func__, __LINE__);
-	    if (SSL_CTX_use_PrivateKey(ctx, pkey) <= 0)
-		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_PrivateKey", __func__, __LINE__);
-	    if (!SSL_CTX_check_private_key(ctx))
-		report(NULL, LOG_ERR, ~0, "%s %d: Certificate and key don't match", __func__, __LINE__);
-	    UI_destroy_method(ui_method);
-	    EVP_PKEY_free(pkey);
 	    X509_free(cert);
-	} else
-	    OPENSSL_cleanse(r->tls_pkcs11_pin, strlen(r->tls_pkcs11_pin));
+	}
+	if (SSL_CTX_use_PrivateKey(ctx, pkey) <= 0)
+	    report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_PrivateKey", __func__, __LINE__);
+	if (!SSL_CTX_check_private_key(ctx))
+	    report(NULL, LOG_ERR, ~0, "%s %d: Certificate and key don't match", __func__, __LINE__);
+	UI_destroy_method(ui_method);
+	EVP_PKEY_free(pkey);
     }
 #endif
 	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);

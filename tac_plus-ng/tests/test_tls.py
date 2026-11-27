@@ -41,6 +41,7 @@ import time
 import unittest
 
 from tactest import LINUX, SOURCE, DaemonTestCase, cpu_seconds, features, radius, tacacs, tls
+from tactest.daemon import parse_only
 
 TLS_REALM = """
 	tls cert-file = "%(server_crt)s"
@@ -149,6 +150,12 @@ class TlsTestCase(DaemonTestCase):
         with self.assertRaises((tacacs.Closed, ssl.SSLError, ConnectionError)):
             login(connect())
 
+    def assertProtocolVersionRefused(self, connect):
+        """The daemon answers the ClientHello with a protocol_version alert, not some other failure."""
+        with self.assertRaises(ssl.SSLError) as cm:
+            connect()
+        self.assertEqual(cm.exception.reason, "TLSV1_ALERT_PROTOCOL_VERSION", cm.exception)
+
     def device_and_transport(self, conn):
         r = conn.author("alice", ["service=shell", "cmd="])
         self.assertTrue(r.ok, r)
@@ -201,12 +208,11 @@ class TacacsOverTls(TlsTestCase):
         ctx = self.ca.context(other.issue("certnas", "/CN=certnas.tactest"))
         self.assertRefused(lambda: self.connect(listener="tls", tls=ctx, server_hostname="localhost", timeout=10.0))
 
-### FIXME -- false positive. "openssl s_connect ... -tls1_2" show a protocol error alert
-#    def test_tls12_is_refused(self):
-#        """RFC 9887 requires TLS 1.3: a listener without aaa.protocol refuses a TLS 1.2 handshake."""
-#        with self.assertRaises((ssl.SSLError, ConnectionError)):
-#            self.connect(listener="tls", tls=self.context("certnas", minimum=ssl.TLSVersion.TLSv1_2, maximum=ssl.TLSVersion.TLSv1_2),
-#                         server_hostname="localhost", timeout=10.0)
+    def test_tls12_is_refused(self):
+        """RFC 9887 requires TLS 1.3: a listener without aaa.protocol refuses a TLS 1.2 handshake."""
+        self.assertProtocolVersionRefused(lambda: self.connect(
+            listener="tls", tls=self.context("certnas", minimum=ssl.TLSVersion.TLSv1_2, maximum=ssl.TLSVersion.TLSv1_2),
+            server_hostname="localhost", timeout=10.0))
 
     def test_obfuscated_packet_over_tls_is_refused(self):
         """RFC 9887: no obfuscation over TLS; a packet without TAC_PLUS_UNENCRYPTED_FLAG gets ERROR, then the close."""
@@ -272,10 +278,13 @@ class PeerCertSan(TlsTestCase):
     def test_dns_san_before_ip_san_single_connection(self):
         self.assertEqual(self.device("dns_then_ip", single_connect=True), "xr")
 
-### FIXME -- There's no correlation between dns_san and IP address, no idea how this could work
-#    def test_dns_san_before_ip_san_from_another_address(self):
-#        """An address SAN that is not the peer's address selects nothing: the device of the address answers."""
-#        self.assertEqual(self.device("dns_then_ip", source="127.0.0.9"), "localhost")
+    def test_dns_san_before_ip_san_from_another_address(self):
+        """IP:127.0.0.65 (device xr) from 127.0.0.9 selects nothing, and no device has the DNS name.
+
+        An IP address SAN selects a device only if it is the peer's address,
+        so the device of the address (localhost) answers, not xr.
+        """
+        self.assertEqual(self.device("dns_then_ip", source="127.0.0.9"), "localhost")
 
     def test_several_dns_sans(self):
         self.assertEqual(self.device("dns_names", source="127.0.0.9"), "dnsnas")
@@ -556,7 +565,7 @@ class Psk(TlsTestCase):
         self.assertTrue(self.connect_psk("psk6", b"demoDemoDemoDemo".hex()).pap("alice", "alicepw").ok)
 
     def test_type6_psk_encrypted_text_is_refused(self):
-        self.assertRefused(lambda: self.connect_psk("psk6", b"ZKAb`S]hPDBAbXWZNJQ_BecWeZIMFYAAB".hex()))
+        self.assertRefused(lambda: self.connect_psk("psk6", b"_ifbOASUKMTdIGXHEXTBPDWF[`CeFOBY^GgMVcAbMQAAB".hex()))
 
     def test_wrong_psk_is_refused(self):
         self.assertRefused(lambda: self.connect_psk(key="00" * 16))
@@ -589,7 +598,7 @@ RADSEC = """
 class RadiusOverTls(TlsTestCase):
     """RADIUS over TLS (RFC 6614) on a TLS listener: the daemon tells it from TACACS+ by the first bytes."""
 
-    LISTEN = {"tls": "tls = yes aaa.protocol = radius.tls"}
+    LISTEN = {"tls": "tls = yes"}
     BODY = TLS_REALM + DEVICES + RADSEC
 
     def radsec(self, client="certnas"):
@@ -644,7 +653,6 @@ class ListenerAaaProtocol(TlsTestCase):
 
 
 TLS12 = ssl.TLSVersion.TLSv1_2
-HANDSHAKE_REFUSED = (ssl.SSLError, ConnectionError)
 
 
 class TlsMinVersionCase(TlsTestCase):
@@ -679,15 +687,11 @@ class TlsMinVersion(TlsMinVersionCase):
     def test_radius_tls_takes_tls12(self):
         self.assertEqual(self.radsec12("radius-tls"), "Access-Accept")
 
-# FIXME -- works according to openssl s_client
-#    def test_tacacs_tls_refuses_a_tls12_handshake(self):
-#        with self.assertRaises(HANDSHAKE_REFUSED):
-#            self.tacacs12("tacacs-tls")
+    def test_tacacs_tls_refuses_a_tls12_handshake(self):
+        self.assertProtocolVersionRefused(lambda: self.tacacs12("tacacs-tls"))
 
-# FIXME -- tac_plus-ng refused TLSv1_2 unless it's enabled via "tla min version = TLSv1_2"
-#   def test_listener_without_aaa_protocol_refuses_a_tls12_handshake(self):
-#       with self.assertRaises(HANDSHAKE_REFUSED):
-#           self.radsec12("tls")
+    def test_listener_without_aaa_protocol_refuses_a_tls12_handshake(self):
+        self.assertProtocolVersionRefused(lambda: self.radsec12("tls"))
 
     def test_tls13_on_every_listener(self):
         self.assertTrue(self.connect_tls(listener="tacacs-tls").pap("alice", "alicepw").ok)
@@ -696,30 +700,29 @@ class TlsMinVersion(TlsMinVersionCase):
         self.assertEqual(r.code_name, "Access-Accept")
 
 
-#FIXME -- same issue as above, I think -- this likely gives a protocol error.
-#class TlsMinVersionTls13(TlsMinVersionCase):
-#    """tls min version = TLSv1.3 holds for RADIUS over TLS as well."""
-#
-#    MIN_VERSION = "\ttls min version = TLSv1.3\n"
-#
-#    def test_radius_tls_refuses_a_tls12_handshake(self):
-#        with self.assertRaises(HANDSHAKE_REFUSED):
-#            self.radsec12("radius-tls")
+class TlsMinVersionTls13(TlsMinVersionCase):
+    """tls min version = TLSv1.3 holds for RADIUS over TLS as well."""
+
+    MIN_VERSION = "\ttls min version = TLSv1.3\n"
+
+    def test_radius_tls_refuses_a_tls12_handshake(self):
+        self.assertProtocolVersionRefused(lambda: self.radsec12("radius-tls"))
 
 
-#FIXME, needs more evaluation
-#class TlsMinVersionTls12(TlsMinVersionCase):
-#    """tls min version = TLSv1.2 lets a TLS 1.2 handshake through anywhere; TACACS+ still answers only TLS 1.3."""
-#
-#    MIN_VERSION = "\ttls min version = TLSv1.2\n"
-#
-#    def test_radius_over_tls12_without_aaa_protocol(self):
-#        self.assertEqual(self.radsec12("tls"), "Access-Accept")
-#
-#    def test_tacacs_over_tls12_gets_no_answer(self):
-#        c = self.tacacs12("tacacs-tls")
-#        self.assertEqual(c.sock.version(), "TLSv1.2")
-#        self.assertRefused(lambda: c)
+class TlsMinVersionTls12(TlsMinVersionCase):
+    """tls min version = TLSv1.2 lets a TLS 1.2 handshake through anywhere; TACACS+ still answers only TLS 1.3."""
+
+    MIN_VERSION = "\ttls min version = TLSv1.2\n"
+
+    def test_radius_over_tls12_without_aaa_protocol(self):
+        self.assertEqual(self.radsec12("tls"), "Access-Accept")
+
+    def test_tacacs_over_tls12_gets_no_answer(self):
+        """The handshake goes through; tac_read() refuses the first packet of a TLS 1.2 session."""
+        c = self.tacacs12("tacacs-tls")
+        self.assertEqual(c.sock.version(), "TLSv1.2")
+        self.assertRefused(lambda: c)
+
 
 class TlsMinVersionBugCompatibility(TlsMinVersionCase):
     """bug compatibility 128 of the device of the address: TACACS+ over TLS 1.2, as before."""
@@ -744,7 +747,7 @@ class RadiusOverDtls(TlsTestCase):
     """RADIUS over DTLS (RFC 7360) on a "protocol = UDP tls = yes" listener, through "openssl s_client -dtls1_2"."""
 
     UDP = True
-    LISTEN = {"dtls": "protocol = UDP tls = yes aaa.protocol = radius.udp"}
+    LISTEN = {"dtls": "protocol = UDP tls = yes aaa.protocol = radius.dtls"}
     BODY = TLS_REALM + DEVICES.replace("key = ipkey", "key = ipkey\n\t\tradius.key = radsecret") + RADSEC
 
     @classmethod
@@ -758,17 +761,13 @@ class RadiusOverDtls(TlsTestCase):
                               timeout=10.0)
         return self.radius("radius/dtls", listener="dtls", sock=sock, timeout=10.0)
 
-#FIXME -- works with tactest
-#    def test_access_accept(self):
-#        r = self.dtls().access_request("alice", "alicepw")
-#        self.assertEqual(r.code_name, "Access-Accept", r)
-#        self.assertEqual(r.get(radius.REPLY_MESSAGE), [b"certnas"], "device not selected by the certificate")
+    def test_access_accept(self):
+        r = self.dtls().access_request("alice", "alicepw")
+        self.assertEqual(r.code_name, "Access-Accept", r)
+        self.assertEqual(r.get(radius.REPLY_MESSAGE), [b"certnas"], "device not selected by the certificate")
 
-#FIXME -- works with native tactest
-#    def test_access_reject(self):
-#        self.assertEqual(self.dtls().access_request("alice", "wrong").code_name, "Access-Reject")
-
-# Quite some other tests below are likely to fail, too. I'm not familiar enought with Python to fix this. -Marc
+    def test_access_reject(self):
+        self.assertEqual(self.dtls().access_request("alice", "wrong").code_name, "Access-Reject")
 
     def test_several_requests_in_one_session(self):
         c = self.dtls()
@@ -800,7 +799,6 @@ class RadiusDtlsAutoDetect(RadiusOverDtls):
     """"tls = auto" on the UDP listener: DTLS and plain RADIUS on the same port."""
 
     LISTEN = {"dtls": "protocol = UDP tls = auto"}
-    BODY = TLS_REALM + "\ntls min version = TLSv1.2\n" + RADSEC
 
     test_plain_radius_on_the_dtls_listener_gets_no_answer = None    # the port takes plain RADIUS too
 
@@ -827,14 +825,14 @@ class RadiusDtlsListenerRealmAutoDetect(RadiusDtlsAutoDetect):
     """"tls auto-detect = yes" in the realm also on a "tls = yes" UDP listener: plain RADIUS works there too."""
 
     LISTEN = {"dtls": "protocol = UDP tls = yes"}
-    BODY = RadiusOverDtls.BODY + "\ttls auto-detect = yes tls min version = TLSv1.2\n"
+    BODY = RadiusOverDtls.BODY + "\ttls auto-detect = yes\n"
 
 
 class RadiusDtlsRealmAutoDetectOff(RadiusOverDtls):
     """"tls auto-detect = no" in the realm on a "tls = auto" UDP listener: the listener takes DTLS only."""
 
     LISTEN = {"dtls": "protocol = UDP tls = auto"}
-    BODY = RadiusOverDtls.BODY + "\ttls auto-detect = no tls min version = TLSv1.2\n"
+    BODY = RadiusOverDtls.BODY + "\ttls auto-detect = no\n"
 
 
 class RadiusOverDtlsPsk(TlsTestCase):
@@ -843,7 +841,7 @@ class RadiusOverDtlsPsk(TlsTestCase):
     UDP = True
     LISTEN = {"dtls": "protocol = UDP tls = yes tls psk = yes", "auto": "protocol = UDP tls = auto tls psk = yes"}
     CIPHER = "PSK-AES128-GCM-SHA256"
-    BODY = PSK + DEVICES + RADSEC + '\ttls ciphers = "%s"\ntls min version = TLSv1.2\n' % CIPHER
+    BODY = PSK + DEVICES + RADSEC + '\ttls ciphers = "%s"\n' % CIPHER
     CLIENTS = {}
 
     @classmethod
@@ -981,9 +979,130 @@ class PeerCertSanValidation(TlsTestCase):
     def test_ip_san_of_the_peer_is_used(self):
         self.assertEqual(self.device("own_address", "127.0.0.9"), "checked")
 
-    def test_without_validation_the_ip_san_selects_nothing(self):
-        """localhost (127.0.0.0/8) doesn't validate: the address SAN is skipped, the address selects the device."""
+    def test_by_default_the_ip_san_of_another_device_selects_nothing(self):
+        """Without "tls.peer.cert.san.validation = yes" the daemon skips IP address SANs: localhost (127.0.0.0/8) answers."""
         self.assertEqual(self.device("xr_address", "127.0.0.10"), "localhost")
+
+
+class PeerCertValidationOfChildRealm(TlsTestCase):
+    """tls.peer.cert.validation: a child realm without the setting takes the value of its parent realm.
+
+    complete_realm() copied the parent value only for a child value of
+    "any": a child realm without the setting kept no value, and the
+    daemon refused every client certificate for the devices of that
+    realm. An explicit "any" in the child got the parent value instead.
+    """
+
+    LISTEN = {"child": "tls = yes realm = child", "child-any": "tls = yes realm = child-any"}
+    BODY = TLS_REALM + POLICY + """
+	realm child {
+		device childnas.tactest {
+			address = 127.0.0.11
+			key = childkey
+		}
+	}
+	realm open {
+		tls.peer.cert.validation = none
+		realm child-any {
+			tls.peer.cert.validation = any
+			device childlocal {
+				address = 127.0.0.10
+				key = childkey
+			}
+		}
+	}
+"""
+    CLIENTS = {"childnas": "/CN=childnas.tactest"}
+
+    def test_child_realm_without_the_setting_takes_a_client_certificate(self):
+        self.assertTrue(self.connect_tls("childnas", listener="child", source="127.0.0.11").pap("alice", "alicepw").ok)
+
+    def test_explicit_any_in_the_child_realm_needs_a_client_certificate(self):
+        self.assertRefused(lambda: self.connect_tls(client=None, listener="child-any", source="127.0.0.10"))
+
+
+PKCS11_PARSE = "id = spawnd { listen = { port = 4949 } }\nid = tac_plus-ng {\n%s}\n"
+
+
+class Pkcs11(TlsTestCase):
+    """tls pkcs11-key-uri and pkcs11-cert-uri, with file: URIs: OpenSSL opens these without a token.
+
+    A realm with a PKCS#11 directive makes the daemon load the OpenSSL
+    provider "pkcs11" (pkcs11-provider); skipped without it.
+    """
+
+    BODY = None
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        code, out = cls.parse_text("\ttls pkcs11-pin = 1234\n")
+        if code:
+            cls.ca.remove()
+            raise unittest.SkipTest("no OpenSSL provider pkcs11: %s" % out.strip())
+
+    @classmethod
+    def parse_text(cls, body):
+        path = cls.ca.path("pkcs11.cfg")
+        with open(path, "w") as f:
+            f.write(PKCS11_PARSE % body)
+        return parse_only(path)
+
+    def token(self, key_uri, cert_uri=None, files=True, pin="1234"):
+        crt, key = self.ca.server
+        body = '\ttls cert-file = "%s"\n\ttls key-file = "%s"\n' % (crt, key) if files else ""
+        body += '\ttls pkcs11-pin = %s\n\ttls pkcs11-key-uri = "%s"\n' % (pin, key_uri)
+        if cert_uri:
+            body += '\ttls pkcs11-cert-uri = "%s"\n' % cert_uri
+        return self.parse_text(body)
+
+    def test_certificate_uri_that_does_not_open_is_a_configuration_error(self):
+        """load_cert_from_token() went on with the NULL store of a failed OSSL_STORE_open(), and the parser crashed."""
+        code, out = self.token("file:" + self.ca.server[1], "file:" + self.ca.path("no-such.crt"))
+        self.assertEqual(code, 78, out)
+
+    def test_pin_for_the_tls_and_the_dtls_context(self):
+        """ssl_init() erased the PIN after the key of the TLS context, and the DTLS context got an empty PIN."""
+        key = self.ca.path("server-enc.key")
+        tls._openssl("pkey", "-in", self.ca.server[1], "-aes256", "-passout", "pass:1234", "-out", key)
+        code, out = self.token("file:" + key, "file:" + self.ca.server[0])
+        self.assertEqual(code, 0, out)
+
+    def handshake(self, body):
+        d = self.start_daemon((body + '\ttls ca-file = "%s"\n' + POLICY) % self.ca.cert, listen={"tls": "tls = yes"})
+        return self.connect_tls(daemon=d).pap("alice", "alicepw").ok
+
+    def test_key_uri_without_a_certificate_uri(self):
+        """The certificate from "tls cert-file", the key from the URI: ssl_init() did not use the key of the URI."""
+        self.assertTrue(self.handshake('\ttls cert-file = "%s"\n\ttls pkcs11-pin = 1234\n\ttls pkcs11-key-uri = "file:%s"\n'
+                                       % (self.ca.server[0], self.ca.server[1])))
+
+
+    def test_realm_with_uris_only(self):
+        """complete_realm() made the TLS contexts only for "tls cert-file" or "tls key-file"."""
+        self.assertTrue(self.handshake('\ttls pkcs11-pin = 1234\n\ttls pkcs11-key-uri = "file:%s"\n\ttls pkcs11-cert-uri = "file:%s"\n'
+                                       % (self.ca.server[1], self.ca.server[0])))
+
+class PeerCertCnAddress(TlsTestCase):
+    """An IP address as the CN of a client certificate selects a device only if it is the peer's address."""
+
+    LISTEN = {"tls": "tls = yes"}
+    BODY = TLS_REALM + """
+	device xr {
+		address = 127.0.0.65
+		key = xrkey
+	}
+""" + policy(("xr", "localhost"))
+    CLIENTS = {"xr_cn": "/CN=127.0.0.65"}
+
+    def device(self, source):
+        return self.device_and_transport(self.connect_tls("xr_cn", source=source))["tactest-device"]
+
+    def test_cn_address_of_the_peer(self):
+        self.assertEqual(self.device("127.0.0.65"), "xr")
+
+    def test_cn_address_of_another_device_selects_nothing(self):
+        self.assertEqual(self.device("127.0.0.9"), "localhost")
 
 
 class PipeLogAfterReject(TlsTestCase):

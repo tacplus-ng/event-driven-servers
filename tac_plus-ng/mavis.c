@@ -39,7 +39,6 @@
 
 #include "headers.h"
 #include "misc/md5crypt.h"
-#include <crypt.h>
 #include <utime.h>
 
 static const char rcsid[] __attribute__((used)) = "$Id$";
@@ -472,8 +471,8 @@ static void mavis_lookup_final(tac_session *session, av_ctx *avc)
 		salt[20] = 0;
 		hash = crypt(pass, salt);
 
-		if (!hash) {
-		    // ... but fall back to MD5 if that doesn't work.
+		if (!hash || *hash == '*') {
+		    // ... but fall back to MD5 if that doesn't work (libxcrypt gives a failure token, not NULL).
 		    salt[1] = '1';
 		    salt[11] = '$';
 		    salt[12] = 0;

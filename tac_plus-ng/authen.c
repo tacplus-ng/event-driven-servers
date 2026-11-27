@@ -437,10 +437,8 @@ static enum token compare_pwdat(struct pwdat *a, char *username, char *b, enum h
 
     switch (a->type) {
     case S_clear:
-	if (b) {
+	if (b)
 	    res = strcmp(a->value, b);
-	    cleanse_string(b);
-	}
 	break;
     case S_crypt:
 	if (b) {
@@ -448,7 +446,6 @@ static enum token compare_pwdat(struct pwdat *a, char *username, char *b, enum h
 		res = strcmp(a->value, md5crypt(b, a->value));
 	    else {
 		char *c = crypt(b, a->value);
-		cleanse_string(b);
 		if (c)
 		    res = strcmp(a->value, c);
 	    }
@@ -456,35 +453,25 @@ static enum token compare_pwdat(struct pwdat *a, char *username, char *b, enum h
 	break;
 #ifdef WITH_SSL
     case S_pbkdf2:
-	if (b) {
+	if (b)
 	    res = verify_cisco_asa_pbkdf2(b, a->value);
-	    cleanse_string(b);
-	}
 	break;
     case S_4:
-	if (b) {
+	if (b)
 	    res = verify_cisco_type4(b, a->value);
-	    cleanse_string(b);
-	}
 	break;
     case S_8:
-	if (b) {
+	if (b)
 	    res = verify_cisco_type89(b, a->value, '8');
-	    cleanse_string(b);
-	}
 	break;
     case S_9:
-	if (b) {
+	if (b)
 	    res = verify_cisco_type89(b, a->value, '9');
-	    cleanse_string(b);
-	}
 	break;
 #endif
     case S_asa:
-	if (b) {
+	if (b)
 	    res = verify_cisco_asa_md5(username, b, a->value);
-	    cleanse_string(b);
-	}
 	break;
     case S_permit:
 	*hint = hint_permitted;
@@ -872,23 +859,17 @@ static enum token check_access(tac_session *session, struct pwdat *pwdat, char *
 {
     enum token res = S_deny;
     enum token host_res = author_eval_host(session, session->ctx->host, session->ctx->realm->script_host_parent_first);
-    u_char bad_salt[sizeof(session->password_bad_salt)];
-    u_char bad_hash[sizeof(session->password_bad_hash)];
-
-    // compare_pwdat() erases the password, so take the hash before
-    if (passwd) {
-	for (size_t i = 0; i < sizeof(bad_salt); i++)
-	    bad_salt[i] = (u_char) arc4random_uniform(256);
-	password_bad_digest(bad_salt, sizeof(bad_salt), passwd, bad_hash);
-    }
+    int compared = 0;
 
     if (session->mavisauth_res != S_unknown) {
 	res = session->mavisauth_res;
 	session->mavisauth_res = S_unknown;
 	if (res == S_error && session->ctx->host->authfallback == TRISTATE_YES)
 	    res = S_deny;
-    } else if (pwdat)
+    } else if (pwdat) {
 	res = compare_pwdat(pwdat, session->username.txt, passwd, hint);
+	compared = 1;
+    }
 
     switch (res) {
     case S_permit:
@@ -918,8 +899,9 @@ static enum token check_access(tac_session *session, struct pwdat *pwdat, char *
 	    if (session->ctx->host->reject_banner)
 		*resp = eval_log_format(session, session->ctx, NULL, session->ctx->host->reject_banner, io_now.tv_sec, NULL);
 	    if (passwd) {
-		memcpy(session->password_bad_salt, bad_salt, sizeof(bad_salt));
-		memcpy(session->password_bad_hash, bad_hash, sizeof(bad_hash));
+		for (size_t i = 0; i < sizeof(session->password_bad_salt); i++)
+		    session->password_bad_salt[i] = (u_char) arc4random_uniform(256);
+		password_bad_digest(session->password_bad_salt, sizeof(session->password_bad_salt), passwd, session->password_bad_hash);
 		session->password_bad = BISTATE_YES;
 	    }
 	    session->password = NULL;
@@ -928,6 +910,10 @@ static enum token check_access(tac_session *session, struct pwdat *pwdat, char *
 
     if (resp && !*resp)
 	*resp = session->user_msg.txt;
+
+    // erase only after the ruleset, as its "password" conditions read the password
+    if (compared && passwd)
+	cleanse_string(passwd);
 
     return res;
 }
@@ -1315,8 +1301,11 @@ static void do_enable(tac_session *session)
 	    return;
 	}
 
-	if (session->enable)	// no user name: an ASA "enable password" hash has none in it
+	if (session->enable) {	// no user name: an ASA "enable password" hash has none in it
 	    res = compare_pwdat(session->enable, NULL, session->authen_data->msg, &hint);
+	    if (session->authen_data->msg)
+		cleanse_string(session->authen_data->msg);
+	}
     }
 
     char *resp = (res == S_permit) ? NULL : eval_log_format(session, session->ctx, NULL, li_permission_denied, io_now.tv_sec, NULL);
