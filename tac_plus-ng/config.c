@@ -6887,22 +6887,17 @@ static SSL_CTX *ssl_init(struct realm *r, int dtls, int use_tls_psk)
 	EVP_PKEY *pkey = load_key_from_token(r->tls_pkcs11_key_uri, ui_method, r);
 	if (r->tls_pkcs11_cert_uri) {
 	    X509 *cert = load_cert_from_token(r->tls_pkcs11_cert_uri, ui_method, r);
-	    OPENSSL_cleanse(r->tls_pkcs11_pin, strlen(r->tls_pkcs11_pin));
-	    if (!cert) {
-		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_certificate", __func__, __LINE__);
-		tac_exit(EX_CONFIG);
-	    }
 	    if (SSL_CTX_use_certificate(ctx, cert) <= 0)
 		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_certificate", __func__, __LINE__);
-	    if (SSL_CTX_use_PrivateKey(ctx, pkey) <= 0)
-		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_PrivateKey", __func__, __LINE__);
-	    if (!SSL_CTX_check_private_key(ctx))
-		report(NULL, LOG_ERR, ~0, "%s %d: Certificate and key don't match", __func__, __LINE__);
-	    UI_destroy_method(ui_method);
-	    EVP_PKEY_free(pkey);
 	    X509_free(cert);
-	} else
-	    OPENSSL_cleanse(r->tls_pkcs11_pin, strlen(r->tls_pkcs11_pin));
+	}
+	if (SSL_CTX_use_PrivateKey(ctx, pkey) <= 0)
+	    report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_PrivateKey", __func__, __LINE__);
+	if (!SSL_CTX_check_private_key(ctx))
+	    report(NULL, LOG_ERR, ~0, "%s %d: Certificate and key don't match", __func__, __LINE__);
+	UI_destroy_method(ui_method);
+	EVP_PKEY_free(pkey);
+	OPENSSL_cleanse(r->tls_pkcs11_pin, strlen(r->tls_pkcs11_pin));
     }
 #endif
 	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);

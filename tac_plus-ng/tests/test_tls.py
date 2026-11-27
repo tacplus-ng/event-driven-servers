@@ -1061,6 +1061,15 @@ class Pkcs11(TlsTestCase):
         code, out = self.token("file:" + self.ca.server[1], "file:" + self.ca.path("no-such.crt"))
         self.assertEqual(code, 78, out)
 
+    def handshake(self, body):
+        d = self.start_daemon((body + '\ttls ca-file = "%s"\n' + POLICY) % self.ca.cert, listen={"tls": "tls = yes"})
+        return self.connect_tls(daemon=d).pap("alice", "alicepw").ok
+
+    def test_key_uri_without_a_certificate_uri(self):
+        """The certificate from "tls cert-file", the key from the URI: ssl_init() did not use the key of the URI."""
+        self.assertTrue(self.handshake('\ttls cert-file = "%s"\n\ttls pkcs11-pin = 1234\n\ttls pkcs11-key-uri = "file:%s"\n'
+                                       % (self.ca.server[0], self.ca.server[1])))
+
 
 class PeerCertCnAddress(TlsTestCase):
     """An IP address as the CN of a client certificate selects a device only if it is the peer's address."""
