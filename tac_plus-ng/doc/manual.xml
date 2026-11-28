@@ -2677,10 +2677,11 @@ user ... {
           <listitem>
             <para><literal>permit if-authenticated =</literal> (
                 <literal>yes</literal> | <literal>no</literal> )</para>
-            <para>This will cause authorization for users unknown to the
+            <para><literal>permit if-authenticated profile =</literal> <emphasis>profile</emphasis></para>
+            <para>You can allow authorization for users unknown to the
                 daemon to succeed (e.g. when logging in locally while the
                 daemon is down or while initially configuring TACACS+ support
-                and messing up).</para>
+                and messing up), and, optionally, or can enable this feature by assigning a profile.</para>
             <para>This configuration will be accepted at realm level, too.</para>
           </listitem>
         </itemizedlist>

@@ -136,7 +136,7 @@ void mavis_lookup(tac_session *session, void (*f)(tac_session *), const char *co
 	return;
 
     if (r->mavis_user_acl) {
-	enum token token = eval_tac_acl(session, r->mavis_user_acl);
+	enum token token = eval_tac_acl(session, r->mavis_user_acl, S_realm);
 	if (token != S_permit) {
 	    report(session, LOG_ERR, ~0, "username '%s' looks bogus", session->username.txt);
 	    f(session);

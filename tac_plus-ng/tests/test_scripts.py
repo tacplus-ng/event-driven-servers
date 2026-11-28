@@ -637,7 +637,7 @@ class PermitIfAuthenticated(DaemonTestCase):
         self.assertEqual(self.unknown_user("127.0.10.1", self.AUTHEN_METH_LOCAL), "PASS_ADD")
 
     def test_user_authenticated_with_tacacs(self):
-        self.assertEqual(self.unknown_user("127.0.10.1", tacacs.AUTHEN_METH_TACACSPLUS), "FAIL")
+        self.assertEqual(self.unknown_user("127.0.10.1", tacacs.AUTHEN_METH_TACACSPLUS), "PASS_ADD")
 
     def test_device_without_it(self):
         self.assertEqual(self.unknown_user("127.0.0.1", self.AUTHEN_METH_LOCAL), "FAIL")

@@ -1376,6 +1376,7 @@ void complete_host(tac_host *h)
 	HS(key, NULL);
 	HS(radius_key, NULL);
 	HS(target_realm, NULL);
+	HS(authz_if_authc_profile, NULL);
 #ifdef WITH_SSL
 	HS(tls_peer_cert_san_validation, TRISTATE_DUNNO);
 #ifndef OPENSSL_NO_PSK

@@ -186,6 +186,8 @@ struct tls_psk_key {
 };
 #endif
 
+struct tac_profile;
+
 struct tac_host {
     TAC_NAME_ATTRIBUTES;
     u_int line;			/* configuration file line number */
@@ -229,6 +231,7 @@ struct tac_host {
     int max_rounds;		/* maximum number of packet exchanges */
     tac_realm *realm;
     struct mavis_action *action;
+    struct tac_profile *authz_if_authc_profile;
     char **user_messages;
     time_t password_expiry_warning;
     u_int bug_compatibility;
@@ -875,7 +878,6 @@ void author(tac_session *, tac_pak_hdr *);
 enum token author_eval_host(tac_session * session, tac_host * h, int parent_first);
 enum token author_eval_profile(tac_session * session, tac_profile * p, int parent_first);
 
-
 /* config.c */
 int cfg_get_enable(tac_session *, struct pwdat **);
 
@@ -898,6 +900,7 @@ void cfg_init(void);
 enum token tac_keycode(char *);
 enum token eval_ruleset(tac_session *, tac_realm *);
 void eval_ruleset_prompt(tac_session *);
+enum token eval_profile_acl(tac_session *session, tac_profile *p, int parent_first);
 
 static __inline__ int minimum(int a, int b)
 {
@@ -937,12 +940,12 @@ void free_reverse(void *, void *);
 void resume_session(tac_session *, int);
 void get_pkt_data(tac_session *, struct authen_start *, struct author *);
 
-enum token tac_script_eval_r(tac_session *, struct mavis_action *);
+enum token tac_script_eval_r(tac_session *, struct mavis_action *, enum token level);
 void tac_script_parse(struct sym *sym, struct mavis_action **p, mem_t * mem, tac_realm * realm, tac_user * user);
 void tac_script_expire_exec_context(struct context *);
 void tac_script_set_exec_context(tac_session *, char *);
 char *tac_script_get_exec_context(tac_session *);
-enum token eval_tac_acl(tac_session *, struct tac_acl *);
+enum token eval_tac_acl(tac_session *, struct tac_acl *, enum token level);
 tac_host *lookup_host(char *, tac_realm *);
 
 #define ACSACL "#ACSACL#"

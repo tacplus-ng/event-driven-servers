@@ -224,7 +224,7 @@ static int password_requirements_failed(tac_session *session, char *what)
 	u_int debug = session->debug;
 	if (!(session->debug & DEBUG_USERINPUT_FLAG))
 	    session->debug = 0;
-	enum token token = eval_tac_acl(session, r->password_acl);
+	enum token token = eval_tac_acl(session, r->password_acl, S_realm);
 	session->debug = debug;
 	if (token != S_permit) {
 	    report(session, LOG_ERR, ~0, "password doesn't meet minimum requirements");
@@ -473,7 +473,7 @@ static enum token lookup_and_set_user(tac_session *session)
     tac_host *h = session->ctx->host;
     while (res != S_permit && res != S_deny && h) {
 	if (h->action) {
-	    res = tac_script_eval_r(session, h->action);
+	    res = tac_script_eval_r(session, h->action, S_host);
 	    switch (res) {
 	    case S_deny:
 		report(DEBAUTHC, "user %s realm %s denied by ACL", session->username.txt, session->ctx->realm->name.txt);
@@ -693,9 +693,9 @@ static int refuse_backend_error(tac_session *session, enum token res, char *info
 static void set_mfa(tac_session *session)
 {
     if (session->user && session->user->mavis_mfa_acl)
-	session->want_mfa = (S_permit == eval_tac_acl(session, session->user->mavis_mfa_acl)) ? BISTATE_YES : BISTATE_NO;
+	session->want_mfa = (S_permit == eval_tac_acl(session, session->user->mavis_mfa_acl, S_user)) ? BISTATE_YES : BISTATE_NO;
     else if (session->host->realm->mavis_mfa_acl)
-	session->want_mfa = (S_permit == eval_tac_acl(session, session->host->realm->mavis_mfa_acl)) ? BISTATE_YES : BISTATE_NO;
+	session->want_mfa = (S_permit == eval_tac_acl(session, session->host->realm->mavis_mfa_acl, S_realm)) ? BISTATE_YES : BISTATE_NO;
 }
 
 static int set_tac_user(tac_session *session, char *info)
@@ -1233,7 +1233,7 @@ static void do_enable(tac_session *session)
     enum token res = S_deny;
     enum hint_enum hint = hint_denied;
 
-    if ((session->ctx->host->augmented_enable == TRISTATE_YES) && (S_permit == eval_tac_acl(session, session->ctx->realm->enable_user_acl))
+    if ((session->ctx->host->augmented_enable == TRISTATE_YES) && (S_permit == eval_tac_acl(session, session->ctx->realm->enable_user_acl, S_realm))
 	) {
 	session->username.txt[0] = 0;
 	session->authfn = do_enable_augmented;
@@ -1241,7 +1241,7 @@ static void do_enable(tac_session *session)
 	return;
     }
 
-    if ((!session->username.txt[0] || (S_permit == eval_tac_acl(session, session->ctx->realm->enable_user_acl)))
+    if ((!session->username.txt[0] || (S_permit == eval_tac_acl(session, session->ctx->realm->enable_user_acl, S_realm)))
 	&& !session->enable_getuser && (session->ctx->host->anon_enable == TRISTATE_NO)) {
 	session->enable_getuser = 1;
 	session->username.txt[0] = 0;

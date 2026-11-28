@@ -2779,7 +2779,7 @@ enum token eval_ruleset_r(tac_session *session, tac_realm *realm, int parent_fir
 
     for (struct tac_rule * rule = realm->rules; rule; rule = rule->next)
 	if (rule->enabled) {
-	    res = eval_tac_acl(session, &rule->acl);
+	    res = eval_tac_acl(session, &rule->acl, S_ruleset);
 #define DEBACL session, LOG_DEBUG, DEBUG_ACL_FLAG
 	    report(DEBACL | DEBUG_REGEX_FLAG,
 		   "%s@%s: ACL %s: %s (profile: %s)", session->username.txt, session->nac_addr_valid ? session->nac_addr_ascii.txt : "<unknown>",
@@ -2799,7 +2799,7 @@ enum token eval_ruleset_r(tac_session *session, tac_realm *realm, int parent_fir
     return res;
 }
 
-static enum token eval_profile_acl(tac_session *session, tac_profile *p, int parent_first)
+enum token eval_profile_acl(tac_session *session, tac_profile *p, int parent_first)
 {
     enum token res = S_unknown;
     if (!p)
@@ -2807,7 +2807,7 @@ static enum token eval_profile_acl(tac_session *session, tac_profile *p, int par
     if (parent_first == TRISTATE_YES && p->skip_parent_script != BISTATE_YES)
 	res = eval_profile_acl(session, p->parent, parent_first);
     if (res != S_permit && res != S_deny && p->acl)
-	res = tac_script_eval_r(session, p->acl);
+	res = tac_script_eval_r(session, p->acl, S_profile);
     if (parent_first != TRISTATE_YES && res != S_permit && res != S_deny && p->skip_parent_script != BISTATE_YES)
 	res = eval_profile_acl(session, p->parent, parent_first);
     return res;
@@ -2847,7 +2847,7 @@ static enum token eval_ruleset_prompt_r(tac_session *session, tac_realm *realm, 
 
     for (struct tac_rule * rule = realm->rules; rule && res != S_permit && res != S_deny; rule = rule->next)
 	if (rule->enabled) {
-	    res = eval_tac_acl(session, &rule->acl);
+	    res = eval_tac_acl(session, &rule->acl, S_ruleset);
 	    report(DEBACL | DEBUG_REGEX_FLAG,
 		   "%s@%s: ACL %s: %s (prompt pass)", session->username.txt, session->nac_addr_valid ? session->nac_addr_ascii.txt : "<unknown>",
 		   rule->acl.name.txt, codestring[res].txt);
@@ -4002,8 +4002,23 @@ static void parse_host_attr(struct sym *sym, tac_realm *r, tac_host *host)
     case S_permit:
 	sym_get(sym);
 	parse(sym, S_ifauthenticated);
-	parse(sym, S_equal);
-	host->authz_if_authc = parse_tristate(sym);
+	switch(sym->code) {
+	case S_equal:
+	    sym_get(sym);
+	    host->authz_if_authc = parse_tristate(sym);
+	    break;
+	case S_profile:
+	    sym_get(sym);
+	    parse(sym, S_equal);
+	    host->authz_if_authc_profile = lookup_profile(sym->buf, r);
+	    if (!host->authz_if_authc_profile)
+		parse_error(sym, "Profile '%s' not found.", sym->buf);
+	    host->authz_if_authc = TRISTATE_YES;
+	    sym_get(sym);
+	    break;
+	default:
+	    parse_error_expect(sym, S_equal, S_profile, S_unknown);
+	}
 	return;
     case S_bug:
 	sym_get(sym);
@@ -4810,7 +4825,7 @@ static void parse_net(struct sym *sym, tac_realm *r, tac_user *user, tac_net *pa
 	radix_walk(net->nettree, radix_copy_func, net->parent->nettree);
 }
 
-enum token eval_tac_acl(tac_session *session, struct tac_acl *acl)
+enum token eval_tac_acl(tac_session *session, struct tac_acl *acl, enum token level)
 {
     if (acl) {
 	if (acl->visited == BISTATE_YES)
@@ -4819,7 +4834,7 @@ enum token eval_tac_acl(tac_session *session, struct tac_acl *acl)
 	char *hint = "";
 	struct mavis_action *action = acl->action;
 	report(DEBACL, "evaluating ACL %s", acl->name.txt);
-	enum token res = tac_script_eval_r(session, action);
+	enum token res = tac_script_eval_r(session, action, level);
 	acl->visited = BISTATE_NO;
 	switch (res) {
 	case S_permit:
@@ -5449,7 +5464,7 @@ static int tac_mavis_cond_compare(tac_session *session, struct mavis_cond *m, ch
     return res;
 }
 
-static int tac_script_cond_eval(tac_session *session, struct mavis_cond *m)
+static int tac_script_cond_eval(tac_session *session, struct mavis_cond *m, enum token level)
 {
     int res = 0;
     str_t v_tmp = { 0 };
@@ -5459,16 +5474,16 @@ static int tac_script_cond_eval(tac_session *session, struct mavis_cond *m)
 	return 0;
     switch (m->type) {
     case S_exclmark:
-	res = !tac_script_cond_eval(session, m->m.e[0]);
+	res = !tac_script_cond_eval(session, m->m.e[0], level);
 	return tac_script_cond_eval_res(session, m, res);
     case S_and:
 	res = -1;
 	for (int i = 0; res && i < m->m.n; i++)
-	    res = tac_script_cond_eval(session, m->m.e[i]);
+	    res = tac_script_cond_eval(session, m->m.e[i], level);
 	return tac_script_cond_eval_res(session, m, res);
     case S_or:
 	for (int i = 0; !res && i < m->m.n; i++)
-	    res = tac_script_cond_eval(session, m->m.e[i]);
+	    res = tac_script_cond_eval(session, m->m.e[i], level);
 	return tac_script_cond_eval_res(session, m, res);
     case S_aaa_protocol:
 	res = ((char *) m->s.rhs == codestring[session->ctx->aaa_protocol].txt);
@@ -5537,7 +5552,7 @@ static int tac_script_cond_eval(tac_session *session, struct mavis_cond *m)
 	}
 	return tac_script_cond_eval_res(session, m, res);
     case S_acl:
-	res = S_permit == eval_tac_acl(session, (struct tac_acl *) m->s.rhs);
+	res = S_permit == eval_tac_acl(session, (struct tac_acl *) m->s.rhs, level);
 	return tac_script_cond_eval_res(session, m, res);
     case S_realm:
 	for (tac_realm * r = session->ctx->realm; !res && r; r = r->parent)
@@ -5922,8 +5937,11 @@ int rad_attr_add_dacl(tac_session *session, struct rad_dacl *dacl, uint32_t *i)
     return 0;
 }
 
-enum token tac_script_eval_r(tac_session *session, struct mavis_action *m)
+
+enum token tac_script_eval_r(tac_session *session, struct mavis_action *m, enum token level)
 {
+    // possible level values: S_host, S_user, S_profile, S_ruleset, S_realm
+
     if (!session || !m)
 	return S_unknown;
     if (session->eval_prompt_only)
@@ -5936,7 +5954,7 @@ enum token tac_script_eval_r(tac_session *session, struct mavis_action *m)
 	case S_PASSWORD:
 	    break;
 	default:
-	    return m->n ? tac_script_eval_r(session, m->n) : S_unknown;
+	    return m->n ? tac_script_eval_r(session, m->n, level) : S_unknown;
 	}
     enum token r;
     switch (m->code) {
@@ -5982,16 +6000,24 @@ enum token tac_script_eval_r(tac_session *session, struct mavis_action *m)
 	report(DEBACL, " line %u: [%s] '%s'", m->line, codestring[m->code].txt, m->b.v ? m->b.v : "");
 	break;
     case S_profile:
-	session->profile = (tac_profile *) (m->b.v);
+	if (level != S_ruleset)
+	    report(DEBACL, " line %u: '%s' will be ignored here.", m->line, codestring[m->code].txt);
+	else
+	    session->profile = (tac_profile *) (m->b.v);
 	report(DEBACL, " line %u: [%s] '%s'",
 	       m->line, codestring[m->code].txt, (session->profile && session->profile->name.txt) ? session->profile->name.txt : "");
 	break;
     case S_attr:
-	session->attr_dflt = (enum token) (long) (m->b.v);
+	if (level != S_profile && level != S_user)
+	    report(DEBACL, " line %u: '%s' will be ignored here.", m->line, codestring[m->code].txt);
+	else
+	    session->attr_dflt = (enum token) (long) (m->b.v);
 	report(DEBACL, " line %u: [%s] '%s'", m->line, codestring[m->code].txt, codestring[session->attr_dflt].txt);
 	break;
     case S_radius:
-	{
+	if (level != S_profile && level != S_user)
+	    report(DEBACL, " line %u: '%s' will be ignored here.", m->line, codestring[m->code].txt);
+	else {
 	    struct rad_action *a = (struct rad_action *) m->b.v;
 	    union rad_action_union u;
 	    memcpy(&u, &a->u, sizeof(u));
@@ -6028,7 +6054,9 @@ enum token tac_script_eval_r(tac_session *session, struct mavis_action *m)
     case S_add:
     case S_set:
     case S_optional:
-	if (session->author_data) {
+	if (level != S_profile && level != S_user)
+	    report(DEBACL, " line %u: '%s' will be ignored here.", m->line, codestring[m->code].txt);
+	else if (session->author_data) {
 	    session->eval_log_raw = 1;
 	    size_t v_len = 0;
 	    char *v = eval_log_format(session, session->ctx, NULL, (struct log_item *) m->b.v, io_now.tv_sec, &v_len);
@@ -6043,32 +6071,34 @@ enum token tac_script_eval_r(tac_session *session, struct mavis_action *m)
 	    break;
 	}
     case S_mfa:
-	if (session->author_data) {
-	    session->want_mfa = (S_permit == eval_tac_acl(session, (struct tac_acl *) m->b.v)) ? BISTATE_YES : BISTATE_NO;
+	if (level != S_profile && level != S_user)
+	    report(DEBACL, " line %u: '%s' will be ignored here.", m->line, codestring[m->code].txt);
+	else if (session->author_data) {
+	    session->want_mfa = (S_permit == eval_tac_acl(session, (struct tac_acl *) m->b.v, level)) ? BISTATE_YES : BISTATE_NO;
 	    report(DEBACL, " line %u: [%s] '%d'", m->line, codestring[m->code].txt, session->want_mfa);
 	}
 	break;
     case S_if:
-	if (tac_script_cond_eval(session, m->a.c)) {
-	    r = tac_script_eval_r(session, m->b.a);
+	if (tac_script_cond_eval(session, m->a.c, level)) {
+	    r = tac_script_eval_r(session, m->b.a, level);
 	    if (r != S_unknown)
 		return r;
 	} else if (m->c.a) {
 	    report(DEBACL, " line %u: [%s]", m->line, codestring[S_else].txt);
-	    r = tac_script_eval_r(session, m->c.a);
+	    r = tac_script_eval_r(session, m->c.a, level);
 	    if (r != S_unknown)
 		return r;
 	}
 	break;
     case S_acl:
-	r = eval_tac_acl(session, (struct tac_acl *) (m->b.v));
+	r = eval_tac_acl(session, (struct tac_acl *) (m->b.v), level);
 	if (r != S_unknown)
 	    return r;
 	break;
     default:
 	return S_unknown;
     }
-    return m->n ? tac_script_eval_r(session, m->n) : S_unknown;
+    return m->n ? tac_script_eval_r(session, m->n, level) : S_unknown;
 }
 
 struct rad_action *new_rad_action(mem_t *mem, struct rad_dict_attr *attr, union rad_action_union *u, struct log_item *li)

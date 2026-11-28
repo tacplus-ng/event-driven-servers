@@ -103,7 +103,7 @@ void accounting(tac_session *session, tac_pak_hdr *hdr)
     enum token res = S_unknown;
     while (h && res != S_permit && res != S_deny) {
 	if (h->action)
-	    res = tac_script_eval_r(session, h->action);
+	    res = tac_script_eval_r(session, h->action, S_host);
 	h = h->parent;
     }
 
@@ -183,7 +183,7 @@ void rad_acct(tac_session *session)
     enum token res = S_unknown;
     while (h && res != S_permit && res != S_deny) {
 	if (h->action)
-	    res = tac_script_eval_r(session, h->action);
+	    res = tac_script_eval_r(session, h->action, S_host);
 	h = h->parent;
     }
 

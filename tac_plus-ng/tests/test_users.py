@@ -504,11 +504,10 @@ class UserAttributes(DaemonTestCase):
         self.assertEqual(results, ["PASS", "FAIL", "FAIL", "PASS", "FAIL"])
 
     def test_permit_if_authenticated(self):
-        """An unknown user that the NAS authenticated itself (method "local") is authorized."""
+        """An unknown user the daemon didn't authenticate itself."""
         args = ["service=shell", "cmd="]
         trusting = self.connect(source="127.0.0.64")
-        self.assertEqual(trusting.author("nobody", args, authen_method=METH_LOCAL).status_name, "PASS_ADD")
-        self.assertEqual(trusting.author("nobody", args).status_name, "FAIL")
+        self.assertEqual(trusting.author("nobody", args).status_name, "PASS_ADD")
         self.assertEqual(self.connect().author("nobody", args, authen_method=METH_LOCAL).status_name, "FAIL")
 
     def test_max_attempts(self):
