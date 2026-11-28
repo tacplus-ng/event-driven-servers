@@ -201,6 +201,20 @@ class DaemonTestCase(unittest.TestCase):
         self.addCleanup(c.close)
         return c
 
+    def assertRejected(self, daemon=None, request=None, msg="the daemon kept the connection open", **kw):
+        """A new connection (and request, a Packet) ends without a reply.
+
+        reject_conn() resets a connection at accept, before the client sends:
+        the reset can arrive before connect() or send() returns.
+        """
+        try:
+            c = self.connect(daemon=daemon, **kw)
+            if request is not None:
+                c.send(request)
+        except (ConnectionResetError, BrokenPipeError):
+            return
+        self.assertTrue(c.closed(), msg)
+
     def radius(self, secret, daemon=None, **kw):
         c = (daemon or self.daemon).radius(secret, **kw)
         self.addCleanup(c.close)

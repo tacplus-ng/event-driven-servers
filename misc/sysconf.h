@@ -494,9 +494,41 @@
     (defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 36)))
   /* natively available */
 #else
+/* No arc4random() in the C library (musl, glibc before 2.36): take the bytes from the kernel.
+ * random() is not an option: nobody seeds it, so every process draws the same sequence. */
 # include <stdint.h>
-static inline uint32_t arc4random(void) { return (uint32_t) random(); }
-static inline uint32_t arc4random_uniform(uint32_t n) { return (uint32_t) (random() % n); }
+# include <stdlib.h>
+# include <fcntl.h>
+# include <unistd.h>
+static inline uint32_t arc4random(void)
+{
+    uint32_t r;
+# if !defined(__GLIBC__) || __GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 25)
+    if (!getentropy(&r, sizeof(r)))
+	return r;
+# endif
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd > -1) {
+	ssize_t len = read(fd, &r, sizeof(r));
+	close(fd);
+	if (len == (ssize_t) sizeof(r))
+	    return r;
+    }
+    abort();			/* no random bytes at all: don't make up predictable ones */
+}
+
+/* Uniform in [0, n): reject the values below 2^32 mod n, as the BSD implementation does. */
+static inline uint32_t arc4random_uniform(uint32_t n)
+{
+    if (n < 2)
+	return 0;
+    uint32_t min = -n % n;
+    uint32_t r;
+    do
+	r = arc4random();
+    while (r < min);
+    return r % n;
+}
 #endif
 /*******************************************************************************
  * SO_REUSEPORT/SO_REUSEPORT_LB

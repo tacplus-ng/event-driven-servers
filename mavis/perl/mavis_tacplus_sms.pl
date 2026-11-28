@@ -47,6 +47,17 @@ my $otp_len = 6;
 
 my $sendmail = "/usr/sbin/sendmail";
 
+# Random bytes from the kernel. Perl's rand() is no source for one-time codes or salts:
+# drand48() with a 32-bit seed, so a few outputs give away the next ones.
+sub random_bytes($) {
+	my $n = shift;
+	open(my $fh, '<:raw', '/dev/urandom') or die "/dev/urandom: $!\n";
+	my $got = read($fh, my $buf, $n);
+	close($fh);
+	die "/dev/urandom: short read\n" unless defined($got) && $got == $n;
+	return $buf;
+}
+
 sub sms_send($$$) {
 	my ($user, $serial, $secret) = @_;
 # FIXME: Send a SMS with serial and secret to the user's mobile number.
@@ -127,7 +138,11 @@ sub get_otp_serial($$) {
 	}
 
 	$serial = strftime "%Y%m%d%H%M%S", localtime;
-	$secret = sprintf("%.*d", $otp_len, int(rand(10**$otp_len)));
+	$secret = "";
+	while (length($secret) < $otp_len) {
+		my $byte = ord(random_bytes(1));
+		$secret .= $byte % 10 if $byte < 250;	# 250 = 25 * 10: no digit more likely than another
+	}
 	$hash = md5_hex($secret);
 	$expires = time + $otp_window;	# seconds
 
@@ -204,7 +219,7 @@ while ($in = <>) {
 	}
 	elsif ($V[AV_A_USER] !~ /[-0-9a-z_]+/i){
 		$V[AV_A_USER_RESPONSE] = "User name not valid.";
-		$V[AV_A_RESULT] = AV_V_RESULT_ERROR;
+		$V[AV_A_RESULT] = AV_V_RESULT_FAIL;
 		$result = MAVIS_FINAL;
 	}
 	elsif ($V[AV_A_TACTYPE] eq AV_V_TACTYPE_AUTH &&

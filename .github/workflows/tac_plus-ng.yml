@@ -74,8 +74,8 @@ env:
   #   the AppArmor profile of slapd confines it to /etc/ldap and /var/lib/ldap, the tests run it in the build tree
   # ldap-utils: test_ldapmavis_ad.py adds its users to the Samba AD DC with ldapadd
   # python3-ldap3: the Python LDAP back-end (mavis_tacplus_ldap.py) of test_ldapmavis_ad.py
-  # limit of tac_plus-ng/tests/run-tests: the Samba AD tests make the run longer than the default 600 s
-  TACTEST_TIMEOUT: 900
+  # limit of tac_plus-ng/tests/run-tests: the Samba AD and Python LDAP tests make the run longer than the default 600 s
+  TACTEST_TIMEOUT: 1200
   UBUNTU_PACKAGES: build-essential clang llvm perl libpcre2-dev libssl-dev libcrypt-dev python3 openssl libpam0g-dev libldap-dev libradcli-dev libc-ares-dev slapd libnet-ldap-perl libio-socket-ssl-perl iproute2 ldap-utils python3-ldap3
 
 jobs:
@@ -83,7 +83,7 @@ jobs:
     # musl, the package list of a typical container build, plus the libraries of the -mt backends and c-ares
     runs-on: ubuntu-24.04
     container: alpine:3.20
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - run: apk add --no-cache gcc musl-dev make perl openssl-dev pcre2-dev linux-headers python3 openssl linux-pam-dev openldap-dev radcli-dev c-ares-dev openldap openldap-back-mdb perl-ldap perl-io-socket-ssl
       - uses: actions/checkout@v5
@@ -106,12 +106,14 @@ jobs:
 
   ubuntu-gcc:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       # test_vrf.py fails instead of skipping without a VRF device
       TACTEST_REQUIRE_VRF: 1
+      # test_pammavis.py fails instead of skipping without a mount namespace
+      TACTEST_REQUIRE_PAM: 1
     steps:
-      # test_vrf.py: a VRF device in an unprivileged user namespace
+      # test_vrf.py: a VRF device in an unprivileged user namespace; test_pammavis.py: a user namespace
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 && sudo modprobe vrf
       - uses: actions/checkout@v5
       # the Samba AD DC of test_ldapmavis_ad.py builds and provisions in the background; "wait for the DC" reads the result
@@ -143,10 +145,12 @@ jobs:
 
   ubuntu-clang-asan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       # test_vrf.py fails instead of skipping without a VRF device
       TACTEST_REQUIRE_VRF: 1
+      # test_pammavis.py fails instead of skipping without a mount namespace
+      TACTEST_REQUIRE_PAM: 1
       # configure keeps only "clang" of --with-cc, run-tests passes the flags
       # again as "make CC=...".
       # sanitizer-ignorelist.txt: known findings that only the compiler can
@@ -164,7 +168,7 @@ jobs:
       - run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $UBUNTU_PACKAGES && sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.slapd
       # high mmap randomization on recent kernels breaks the ASan runtime
       - run: sudo sysctl -w vm.mmap_rnd_bits=28
-      # test_vrf.py: a VRF device in an unprivileged user namespace
+      # test_vrf.py: a VRF device in an unprivileged user namespace; test_pammavis.py: a user namespace
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 && sudo modprobe vrf
       - run: tac_plus-ng/tests/run-tests --build-only
       # a "green" ASan job must not be a plain build
@@ -191,7 +195,7 @@ jobs:
     # build (no OpenSSL) is the one tested: it takes other code paths (no TLS
     # detection before the first read)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -199,8 +203,10 @@ jobs:
     env:
       # test_vrf.py fails instead of skipping without a VRF device
       TACTEST_REQUIRE_VRF: 1
+      # test_pammavis.py fails instead of skipping without a mount namespace
+      TACTEST_REQUIRE_PAM: 1
     steps:
-      # test_vrf.py: a VRF device in an unprivileged user namespace
+      # test_vrf.py: a VRF device in an unprivileged user namespace; test_pammavis.py: a user namespace
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 && sudo modprobe vrf
       - uses: actions/checkout@v5
       # the Samba AD DC of test_ldapmavis_ad.py builds and provisions in the background; "wait for the DC" reads the result

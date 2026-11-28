@@ -1176,9 +1176,8 @@ class UnknownHost(DaemonTestCase):
 
     def test_issue247_tacacs_from_unknown_host(self):
         d = self.start()
-        with d.connect(source="127.0.0.2", timeout=2.0) as c:
-            c.send(tacacs.Packet.authen_start(user="alice"))
-            self.assertTrue(c.closed(), "the daemon answered a device it doesn't know")
+        self.assertRejected(daemon=d, source="127.0.0.2", timeout=2.0, request=tacacs.Packet.authen_start(user="alice"),
+                            msg="the daemon answered a device it doesn't know")
 
 
 VENDOR_SPECIFIC = 26

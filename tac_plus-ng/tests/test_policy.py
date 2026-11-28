@@ -258,10 +258,8 @@ class DeviceAddressFromOwnRealmHostsFile(DaemonTestCase):
 """ % (parent_hosts, lab_hosts), listen={"lab": "realm = lab"})
         with d.connect(listener="lab", source="127.0.0.10", key="naskey") as c:
             self.assertEqual(c.pap("alice", "alicepw").status_name, "PASS")
-        c = d.connect(listener="lab", source="127.0.0.9", key="naskey", timeout=10.0)
-        self.addCleanup(c.close)
-        with self.assertRaises((tacacs.Closed, ConnectionError)):
-            c.pap("alice", "alicepw")
+        self.assertRejected(daemon=d, listener="lab", source="127.0.0.9", key="naskey", timeout=10.0,
+                            request=tacacs.Packet.authen_start(user="alice"))
 
 
 @unittest.skipUnless(LINUX, "127.0.0.0/8 local addresses")
@@ -350,6 +348,25 @@ class DeviceDnsNameFromDnsServer(PolicyTestCase):
         self.assertEqual(self.holds("127.0.6.1"), ["nas-example"])
         self.assertLess(time.monotonic() - start, 4.0)
         self.assertGreater(server.queries, 0)
+
+
+class Alias(PolicyTestCase):
+    """An alias puts its tokens where its name is: each token of the alias keeps its whole text."""
+
+    CONFIG = USER + """
+	alias shell_attributes { set tactest-alias-with-a-long-token = yes }
+	profile shell {
+		script {
+			if (service == shell) { shell_attributes permit }
+		}
+	}
+	ruleset {
+		rule { script { profile = shell permit } }
+	}
+"""
+
+    def test_alias(self):
+        self.assertEqual(self.holds(), ["alias-with-a-long-token"])
 
 
 if __name__ == "__main__":

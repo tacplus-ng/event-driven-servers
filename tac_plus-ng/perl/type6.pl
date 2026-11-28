@@ -23,6 +23,17 @@ use Crypt::Cipher::AES;
 my $TYPE6_SALT_LEN = 8;
 my $TYPE6_MAC_LEN  = 4;
 
+# Random bytes from the kernel. Perl's rand() is no source for one-time codes or salts:
+# drand48() with a 32-bit seed, so a few outputs give away the next ones.
+sub random_bytes($) {
+	my $n = shift;
+	open(my $fh, '<:raw', '/dev/urandom') or die "/dev/urandom: $!\n";
+	my $got = read($fh, my $buf, $n);
+	close($fh);
+	die "/dev/urandom: short read\n" unless defined($got) && $got == $n;
+	return $buf;
+}
+
 sub base41_decode_triplet {
 	my ($a, $b, $c) = @_;
 	my $num = (ord($a) - 65) * 41 * 41 + (ord($b) - 65) * 41 + (ord($c) - 65);
@@ -98,7 +109,7 @@ sub type6_mac {
 sub encrypt_type6 {
 	my ($plaintext, $master_key) = @_;
 	my $salt = "";
-	$salt .= chr(int(rand(256))) for 1..$TYPE6_SALT_LEN;
+	$salt = random_bytes($TYPE6_SALT_LEN);
 	my $enc = aes_stream_xor($master_key, $salt, $plaintext);
 	my $mac = type6_mac($enc, $master_key, $salt);
 	my $blob = $salt . $enc . $mac;

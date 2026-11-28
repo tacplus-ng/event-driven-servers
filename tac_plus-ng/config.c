@@ -6815,12 +6815,12 @@ static void ssl_apply_options(SSL_CTX *ctx, struct realm *r, int use_tls_psk)
 
     if (use_tls_psk)
 	switch (r->tls_psk_key_exchange) {
-	case S_unknown:
 	case S_auto:
 #ifdef SSL_OP_ALLOW_NO_DHE_KEX
 	    SSL_CTX_set_options(ctx, SSL_OP_ALLOW_NO_DHE_KEX);
 #endif
 	    break;
+	case S_unknown:		// the default: psk_dhe_ke only, so a TLS 1.3 PSK session always has forward secrecy
 	case S_dhe:
 	    break;
 	case S_no_dhe:

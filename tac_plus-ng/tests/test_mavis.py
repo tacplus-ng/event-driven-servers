@@ -84,8 +84,8 @@ class Scenario(DaemonTestCase):
         self.assertEqual(len({e["pid"] for e in auth}), 1, "one MAVIS child expected: %s" % auth)
 
     def test_forced_results(self):
-        """ERROR without a fallback user is a FAIL for the client too (the log tells them apart)."""
-        for result, status in (("ACK", "PASS"), ("NAK", "FAIL"), ("NOTFOUND", "FAIL"), ("ERROR", "FAIL")):
+        """ERROR from the backend is an ERROR for the client (without "authentication fallback = permit")."""
+        for result, status in (("ACK", "PASS"), ("NAK", "FAIL"), ("NOTFOUND", "FAIL"), ("ERROR", "ERROR")):
             with self.subTest(result=result):
                 self.stub.set(users={"alice": {"password": "first"}}, result={"alice:AUTH": result})
                 self.assertEqual(self.connect().pap("alice", "wrong").status_name, status)
@@ -129,6 +129,85 @@ class BackendFailed(DaemonTestCase):
 
     def test_configured_message(self):
         self.assertEqual(self.login('\tmessage BACKEND_FAILED = "Directory down."\n'), ("ERROR", "Directory down."))
+
+
+@unittest.skipUnless(LINUX, "127.0.0.0/8 local addresses")
+class BackendFailedNotAscii(DaemonTestCase):
+    """An ERROR from the backend is an ERROR for the client also for a password change, PAP and enable."""
+
+    CONFIG = Stub.module(childs=(1, 1)) + BACKEND.replace("login backend = mavis", "login backend = mavis chpass") + """
+	device paplogin {
+		address = 127.0.0.91
+		key = tactest
+		pap password mapping = login
+	}
+	device enablelogin {
+		address = 127.0.0.92
+		key = tactest
+		enable 15 = login
+		augmented-enable = permit
+	}
+""" + PERMIT
+    BACKEND_FAILED = ("ERROR", "Authentication backend failure.")
+
+    def setUp(self):
+        super().setUp()
+        self.stub = Stub(self.daemon)
+
+    def backend_error(self, tactype):
+        self.stub.set(users={"alice": {"password": "old", "new_password": "new"}}, result={"alice:" + tactype: "ERROR"})
+
+    def answer(self, r):
+        return r.status_name, r.server_msg
+
+    def test_password_change_dialog(self):
+        self.backend_error("CHPW")
+        before = self.stub.count(type="CHPW")
+        r = self.connect().ascii_login("alice", "", data=["old", "new", "new"])
+        self.assertEqual(self.answer(r), self.BACKEND_FAILED, r)
+        self.assertEqual([e["result"] for e in self.stub.requests(type="CHPW")[before:]], ["ERROR"])
+        self.wait_log("authentication", "\talice\ttty0\t127.0.0.1\tpassword change failed (backend error)")
+
+    def test_change_password_request(self):
+        """The TACACS+ CHPASS action of RFC 8907 5.4.4.3."""
+        self.backend_error("CHPW")
+        s = self.connect().session()
+        r = s.dialog(s.start(user="alice", action=2), {"GETDATA": ["old"], "GETPASS": ["new", "new"]})
+        self.assertEqual(self.answer(r), self.BACKEND_FAILED, r)
+
+    def test_pap(self):
+        self.backend_error("AUTH")
+        self.assertEqual(self.answer(self.connect().pap("alice", "old")), self.BACKEND_FAILED)
+        self.wait_log("authentication", "\talice\ttty0\t127.0.0.1\tpap login failed (backend error)")
+
+    def test_pap_mapped_to_login(self):
+        self.backend_error("AUTH")
+        self.assertEqual(self.answer(self.connect(source="127.0.0.91").pap("alice", "old")), self.BACKEND_FAILED)
+
+    def test_enable_with_the_login_password(self):
+        self.backend_error("AUTH")
+        r = self.connect(source="127.0.0.92").enable("old", user="alice")
+        self.assertEqual((r.statuses, r.server_msg), (["GETPASS", "ERROR"], self.BACKEND_FAILED[1]), r)
+
+    def test_augmented_enable(self):
+        self.backend_error("AUTH")
+        # two answers: after the MAVIS answer the daemon asks a MAVIS user again
+        r = self.connect(source="127.0.0.92").enable(["alice old", "alice old"], user="$enable$")
+        self.assertEqual(self.answer(r), self.BACKEND_FAILED, r)
+
+
+class BackendFailedWithFallback(DaemonTestCase):
+    """With "authentication fallback = permit" an ERROR from the backend stays a FAIL for the client."""
+
+    CONFIG = None
+
+    def test_password_change(self):
+        policy = Stub.module(childs=(1, 1)) + BACKEND.replace("login backend = mavis", "login backend = mavis chpass")
+        d = self.start_daemon(policy + "\tauthentication fallback = permit\n" + PERMIT)
+        Stub(d).set(users={"alice": {"password": "old", "new_password": "new"}}, result={"alice:CHPW": "ERROR"})
+        with d.connect() as c:
+            r = c.ascii_login("alice", "", data=["old", "new", "new"])
+        self.assertEqual(r.status_name, "FAIL", r)
 
 
 class Fallback(DaemonTestCase):
@@ -556,12 +635,7 @@ class Type6HostProfile(DaemonTestCase):
         self.assertEqual(self.connect(source="127.0.0.6", key="naskey").pap("alice", "alicepw").status_name, "PASS")
 
     def test_type6_value_the_profile_key_cannot_decrypt_rejects_the_host(self):
-        # reject_conn() resets the connection before the client sends: the reset can come before connect() returns
-        try:
-            c = self.connect(source="127.0.0.7")
-        except ConnectionResetError:
-            return
-        self.assertTrue(c.closed(), "the daemon accepted the host")
+        self.assertRejected(source="127.0.0.7", msg="the daemon accepted the host")
 
 
 @unittest.skipUnless("openssl" in features(), "type 6 needs a build with OpenSSL")
@@ -806,6 +880,40 @@ class MustChangeWithoutDialog(DaemonTestCase):
         with d.connect() as c:
             self.assertEqual(c.pap("alice", "new").status_name, "PASS")
 
+
+
+@unittest.skipUnless(shutil.which("perl"), "the backend is a Perl script")
+class ShadowPasswordSalt(DaemonTestCase):
+    """The salt of a changed password in mavis_tacplus_shadow.pl comes from /dev/urandom, not from Perl's rand().
+
+    rand() is drand48() with a 32-bit seed: from a few salts in a shadow
+    file the next ones follow. To show where the salt comes from, the
+    backend runs with rand() seeded to the same value twice (PERL5OPT);
+    with rand() both password changes get the same salt.
+    """
+
+    CONFIG = None
+
+    def changed_hash(self, seed_dir, name):
+        shadow = self.scratch_file(name, "alice:%s:0:0:99999:7:::\n" % crypt_md5("pw"))
+        d = self.start_daemon("""
+	mavis module = external {
+		setenv SHADOWFILE = "%s"
+		setenv PERL5OPT = "-I%s -MFixedSeed"
+		exec = "%s"
+	}
+""" % (shadow, seed_dir, SHADOW) + BACKEND.replace("login backend = mavis", "login backend = mavis chpass") + PERMIT)
+        with d.connect() as c:
+            r = c.ascii_login("alice", "pw", data=["new", "new"])
+        self.assertEqual(r.statuses, ["GETPASS", "GETDATA", "GETDATA", "PASS"], r)
+        with open(shadow) as f:
+            return f.read().split(":")[1]
+
+    def test_salt_does_not_come_from_rand(self):
+        seed_dir = os.path.dirname(self.scratch_file("FixedSeed.pm", "package FixedSeed;\nsrand(1);\n1;\n"))
+        first, second = self.changed_hash(seed_dir, "shadow1"), self.changed_hash(seed_dir, "shadow2")
+        self.assertTrue(first.startswith("$1$") and second.startswith("$1$"), (first, second))
+        self.assertNotEqual(first.split("$")[2], second.split("$")[2], "the same salt twice: it comes from rand()")
 
 class ProfileConflict(DaemonTestCase):
     """The backend authenticates the user, but the profile it sends sets a password that is not "mavis".

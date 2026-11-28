@@ -49,6 +49,7 @@ HASHES = """
 	user always { password login = permit password pap = permit }
 	user never { password login = deny password pap = deny }
 	user refused { password login = error }
+	user enableerror { password login = clear loginpw enable 15 = error }
 	user hashedchap {
 		password chap = crypt $$1$$mERr$$hx5rVt7rPNoS4wqbXKX7m0
 		password pap = clear cisco
@@ -65,6 +66,17 @@ HASHES = """
 		address = 127.0.0.21
 		key = tactest
 		enable 15 = asa 2KFQnbNIdI.2KYOU
+	}
+	device enableerror {
+		address = 127.0.0.23
+		key = tactest
+		enable 15 = error
+	}
+	device augmentederror {
+		address = 127.0.0.24
+		key = tactest
+		enable 15 = error
+		augmented-enable = permit
 	}
 	type6-key = demo
 	user type6 {
@@ -122,6 +134,23 @@ class PasswordTypes(DaemonTestCase):
     def test_error_answers_with_error(self):
         """Doc: "error" rejects the session with a TACACS+ error status, so the NAS falls back to local."""
         r = self.connect().ascii_login("refused", "anything")
+        self.assertEqual((r.status_name, r.server_msg), ("ERROR", "Handling refused."), r)
+
+    def test_enable_error_answers_with_error(self):
+        """"enable = error" also gives the TACACS+ error status, and the daemon asks no enable password."""
+        r = self.connect().enable("anything", user="enableerror")
+        self.assertEqual((r.statuses, r.server_msg), (["ERROR"], "Handling refused."), r)
+
+    @unittest.skipUnless(LINUX, "127.0.0.0/8 local addresses")
+    def test_enable_error_of_the_device(self):
+        for user in ("", "md5crypt"):
+            with self.subTest(user=user):
+                r = self.connect(source="127.0.0.23").enable("anything", user=user)
+                self.assertEqual((r.statuses, r.server_msg), (["ERROR"], "Handling refused."), r)
+
+    @unittest.skipUnless(LINUX, "127.0.0.0/8 local addresses")
+    def test_augmented_enable_error(self):
+        r = self.connect(source="127.0.0.24").enable(["md5crypt cisco"], user="$enable$")
         self.assertEqual((r.status_name, r.server_msg), ("ERROR", "Handling refused."), r)
 
     def test_chap_with_a_hash_fails(self):

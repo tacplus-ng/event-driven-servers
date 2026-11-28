@@ -686,14 +686,20 @@ int query_mavis_dacl(tac_session *session, void (*f)(tac_session *))
 
 static enum token check_access(tac_session * session, struct pwdat *pwdat, char *passwd, enum hint_enum *hint, char **resp);
 
-static int refuse_tac_session(tac_session *session, char *info, enum pw_ix pw_ix)
+// a password "error" refuses the session with a TACACS+ ERROR
+static int refuse_error_password(tac_session *session, char *info, struct pwdat *pwdat)
 {
-    if (session->user && session->user->passwd[pw_ix]->type == S_error) {
+    if (pwdat && pwdat->type == S_error) {
 	report_auth(session, info, hint_error, S_deny);
 	send_authen_error(session, "Handling refused.");
 	return -1;
     }
     return 0;
+}
+
+static int refuse_tac_session(tac_session *session, char *info, enum pw_ix pw_ix)
+{
+    return session->user ? refuse_error_password(session, info, session->user->passwd[pw_ix]) : 0;
 }
 
 static int refuse_rad_session(tac_session *session, char *info, enum pw_ix pw_ix)
@@ -704,6 +710,16 @@ static int refuse_rad_session(tac_session *session, char *info, enum pw_ix pw_ix
 	return -1;
     }
     return 0;
+}
+
+// a backend error (MAVIS ERROR) is a TACACS+ ERROR, not a FAIL
+static int refuse_backend_error(tac_session *session, enum token res, char *info, enum hint_enum hint)
+{
+    if (res != S_error)
+	return 0;
+    report_auth(session, info, hint, res);
+    send_authen_error(session, "%s", eval_log_format(session, session->ctx, NULL, li_backend_failed, io_now.tv_sec, NULL));
+    return -1;
 }
 
 static void set_mfa(tac_session *session)
@@ -1077,6 +1093,9 @@ static void do_chpass(tac_session *session)
     char *resp = NULL;
     enum token res = check_access(session, pwdat, session->password_new, &hint, &resp);
 
+    if (refuse_backend_error(session, res, info, hint))
+	return;
+
     if (res == S_permit) {
 	session->passwd_mustchange = 0;
 	if (resp) {
@@ -1177,6 +1196,8 @@ static void do_enable_login(tac_session *session)
 	return;
 
     enum token res = check_access(session, pwdat, session->password, &hint, &resp);
+    if (refuse_backend_error(session, res, info, hint))
+	return;
     if (res == S_permit)
 	resp = NULL;
 
@@ -1232,6 +1253,8 @@ static void do_enable_augmented(tac_session *session)
 	    return;
 
 	cfg_get_enable(session, &session->enable);
+	if (refuse_error_password(session, info, session->enable))
+	    return;
 
 	if (session->enable) {
 	    if (session->enable->type == S_login)
@@ -1239,6 +1262,8 @@ static void do_enable_augmented(tac_session *session)
 	}
     }
 
+    if (refuse_backend_error(session, res, info, hint))
+	return;
     if (res == S_permit)
 	resp = NULL;
 
@@ -1284,6 +1309,8 @@ static void do_enable(tac_session *session)
 
     if (!session->enable)
 	cfg_get_enable(session, &session->enable);
+    if (refuse_error_password(session, info, session->enable))
+	return;
 
     if (session->enable && session->enable_getuser && (session->enable->type == S_permit))
 	res = S_permit;
@@ -1390,11 +1417,10 @@ static void do_ascii_login(tac_session *session)
 
     mem_free(session->mem, &session->challenge);
 
-    switch (res) {
-    case S_error:
-	report_auth(session, info, hint, res);
-	send_authen_error(session, "%s", eval_log_format(session, session->ctx, NULL, li_backend_failed, io_now.tv_sec, NULL));
+    if (refuse_backend_error(session, res, info, hint))
 	return;
+
+    switch (res) {
     case S_permit:
 	if (session->passwd_mustchange) {
 	    if (!session->user_msg.txt)
@@ -1744,6 +1770,8 @@ static void do_login(tac_session *session)
 	return;
 
     res = check_access(session, pwdat, session->password, &hint, &resp);
+    if (refuse_backend_error(session, res, info, hint))
+	return;
 
     if (!resp)
 	resp = session->user_msg.txt;
@@ -1789,6 +1817,8 @@ static void do_pap(tac_session *session)
 	return;
 
     res = check_access(session, pwdat, session->password, &hint, &resp);
+    if (refuse_backend_error(session, res, info, hint))
+	return;
 
     if (!resp)
 	resp = session->user_msg.txt;

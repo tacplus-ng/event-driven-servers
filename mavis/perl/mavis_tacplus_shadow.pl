@@ -109,6 +109,17 @@ if (crypt('test', '$1$q5/vUEsR$') eq '$1$q5/vUEsR$jVwHmEw8zAmgkjMShLBg/.') {
 	print STDERR "Your system doesn't support modern hashes. Please install the mkpasswd utility.\n";
 }
 
+# Random bytes from the kernel. Perl's rand() is no source for one-time codes or salts:
+# drand48() with a 32-bit seed, so a few outputs give away the next ones.
+sub random_bytes($) {
+	my $n = shift;
+	open(my $fh, '<:raw', '/dev/urandom') or die "/dev/urandom: $!\n";
+	my $got = read($fh, my $buf, $n);
+	close($fh);
+	die "/dev/urandom: short read\n" unless defined($got) && $got == $n;
+	return $buf;
+}
+
 sub run_mkpasswd($) {
 	my ($parent0, $child1) = POSIX::pipe();
 	my ($child0, $parent1) = POSIX::pipe();
@@ -151,10 +162,7 @@ sub new_password_hash ($) {
 			undef $mkpasswd;
 		}
 	}
-	my $salt = "";
-	for (my $i = 0; $i < 16; $i++) {
-		$salt .= ('.', '/', 0..9, 'A'..'Z', 'a'..'z')[rand 64];
-	}
+	my $salt = join '', map { ('.', '/', 0..9, 'A'..'Z', 'a'..'z')[ord($_) % 64] } split //, random_bytes(16);
 
 	return get_password_hash($_[0], $hashid . $salt);
 }
