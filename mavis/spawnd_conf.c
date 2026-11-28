@@ -47,7 +47,7 @@ static void parse_acl(struct sym *sym)
     if (!acl_last || acl_last->negate != negate || acl_last->token != sc) {
 	while (*acl)
 	    acl = &(*acl)->next;
-	acl = calloc(1, sizeof(struct acl));
+	*acl = calloc(1, sizeof(struct acl));
 	if (!acl_start)
 	    acl_start = *acl;
 	acl_last = *acl;
