@@ -2057,6 +2057,7 @@ mavis user filter = __internal__username_acl__ </screen>
               <emphasis>cert-file</emphasis>
             </para>
             <para>Specifies the public part of a TLS server certificate in PEM format.</para>
+            <para>If you're using a PKCS#11 provider this is where you place the cert url (needs to start with <literal>pkcs11:</literal></para>
           </listitem>
           <listitem>
             <para>
@@ -2064,6 +2065,7 @@ mavis user filter = __internal__username_acl__ </screen>
               <emphasis>key-file</emphasis>
             </para>
             <para>Specifies the private part (the key) of a TLS server certificate in PEM format.</para>
+            <para>If you're using a PKCS#11 provider this is where you place the key url (needs to start with <literal>pkcs11:</literal></para>
           </listitem>
           <listitem>
             <para>
@@ -2071,6 +2073,7 @@ mavis user filter = __internal__username_acl__ </screen>
               <emphasis>passphrase</emphasis>
             </para>
             <para>Specifies the optional passphrase to decrypt <emphasis>key-file</emphasis>.</para>
+            <para>If you're using a PKCS#11 provider this is where you place the PIN.</para>
           </listitem>
           <listitem>
             <para><literal>tls accept expired =</literal> ( <literal>yes</literal> | <literal>no</literal> )</para>
@@ -2088,7 +2091,8 @@ mavis user filter = __internal__username_acl__ </screen>
               <literal>tls cafile =</literal>
               <emphasis>cafile</emphasis>
             </para>
-            <para>Specifies a file with the CAs to use.</para>
+            <para>Specifies a file with the CAs to use for client verification.</para>
+            <para>If you're using a PKCS#11 provider this is where you place the CA url (needs to start with <literal>pkcs11:</literal></para>
           </listitem>
           <listitem>
             <para>

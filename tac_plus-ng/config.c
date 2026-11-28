@@ -91,6 +91,7 @@
 #if OPENSSL_VERSION_NUMBER >= 0x30000000
 #include <openssl/ui.h>
 #include <openssl/store.h>
+#include <openssl/safestack.h>
 #endif
 #include "type6.h"
 #endif
@@ -419,19 +420,14 @@ void complete_realm(tac_realm *r)
     r->complete = 1;
 #ifdef WITH_SSL
     int has_key = r->tls_cert || r->tls_key;
-#if OPENSSL_VERSION_NUMBER >= 0x30000000
-    has_key |= r->tls_pkcs11_key_uri != NULL;
-#endif
     if (has_key) {
 	if (!r->tls)
 	    r->tls = ssl_init(r, 0, 0);
 	if (!r->dtls)
 	    r->dtls = ssl_init(r, 1, 0);
     }
-#if OPENSSL_VERSION_NUMBER >= 0x30000000
-    if (r->tls_pkcs11_pin)	// after the TLS and the DTLS context, which both use it
-	OPENSSL_cleanse(r->tls_pkcs11_pin, strlen(r->tls_pkcs11_pin));
-#endif
+    if (r->tls_pass)	// after the TLS and the DTLS context, which both use it
+	OPENSSL_cleanse(r->tls_pass, strlen(r->tls_pass));
 #ifndef OPENSSL_NO_PSK
     if (r->use_tls_psk) {
 	if (!r->tls_psk)
@@ -2298,29 +2294,6 @@ void parse_decls_real(struct sym *sym, tac_realm *r)
 		    parse_error_expect(sym, S_id, S_key, S_key_exchange, S_dhe_supported_groups, S_equal, S_unknown);
 		}
 		continue;
-#endif
-#if OPENSSL_VERSION_NUMBER >= 0x30000000
-	    case S_pkcs11_pin:
-		sym_get(sym);
-		parse(sym, S_equal);
-		r->tls_pkcs11_pin = strdup(sym->buf);
-		sym_get(sym);
-		config.pkcs11 = 1;
-		break;
-	    case S_pkcs11_cert_uri:
-		sym_get(sym);
-		parse(sym, S_equal);
-		r->tls_pkcs11_cert_uri = strdup(sym->buf);
-		sym_get(sym);
-		config.pkcs11 = 1;
-		break;
-	    case S_pkcs11_key_uri:
-		sym_get(sym);
-		parse(sym, S_equal);
-		r->tls_pkcs11_key_uri = strdup(sym->buf);
-		sym_get(sym);
-		config.pkcs11 = 1;
-		break;
 #endif
 	    case S_crldir:
 		sym_get(sym);
@@ -6699,14 +6672,15 @@ static int alpn_cb(SSL *ssl, const unsigned char **out, unsigned char *outlen, c
 static int ui_read_pin(UI *ui, UI_STRING *uis) {
     if (UI_get_string_type(uis) == UIT_PROMPT) {
 	struct realm *r = (struct realm *) UI_get0_user_data(ui);
-	if (r && r->tls_pkcs11_pin) {
-	    UI_set_result(ui, uis, r->tls_pkcs11_pin);
+	if (r && r->tls_pass) {
+	    UI_set_result(ui, uis, r->tls_pass);
 	    return 1;
 	}
     }
     return 0;
 }
 
+#if 0
 X509 *load_cert_from_token(const char *pkcs11_uri, UI_METHOD *ui_method, struct realm *r)
 {
     OSSL_STORE_CTX *store_ctx = OSSL_STORE_open(pkcs11_uri, ui_method, r, NULL, NULL);
@@ -6735,6 +6709,52 @@ X509 *load_cert_from_token(const char *pkcs11_uri, UI_METHOD *ui_method, struct 
 	tac_exit(EX_CONFIG);
     }
     return cert;
+}
+#endif
+
+static STACK_OF(X509) *load_chain_from_token(const char *uri)
+{
+    STACK_OF(X509) *certs = sk_X509_new_null();
+    if (!certs) {
+	return NULL;
+    }
+
+    OSSL_STORE_CTX *store = OSSL_STORE_open(uri, NULL, NULL, NULL, NULL);
+    if (!store) {
+	sk_X509_free(certs);
+	return NULL;
+    }
+
+    while (!OSSL_STORE_eof(store) && !OSSL_STORE_error(store)) {
+	OSSL_STORE_INFO *info = OSSL_STORE_load(store);
+	if (!info) {
+	    break;
+	}
+
+    if (OSSL_STORE_INFO_get_type(info) == OSSL_STORE_INFO_CERT) {
+	X509 *cert = OSSL_STORE_INFO_get1_CERT(info);
+	if (cert) {
+	    if (sk_X509_push(certs, cert) <= 0) {
+		X509_free(cert);
+		OSSL_STORE_INFO_free(info);
+		sk_X509_pop_free(certs, X509_free);
+		OSSL_STORE_close(store);
+		return NULL;
+	   }
+	}
+    }
+
+    OSSL_STORE_INFO_free(info);
+}
+
+if (OSSL_STORE_error(store)) {
+OSSL_STORE_close(store);
+sk_X509_pop_free(certs, X509_free);
+return NULL;
+}
+
+OSSL_STORE_close(store);
+return certs;
 }
 
 static EVP_PKEY *load_key_from_token(const char *pkcs11_uri, UI_METHOD *ui_method, struct realm *r) {
@@ -6859,7 +6879,27 @@ static SSL_CTX *ssl_init(struct realm *r, int dtls, int use_tls_psk)
 
     SSL_CTX_set_security_level(ctx, 2); // disables SHA-1
 
-    if (r->tls_pass) {
+    int have_tls_pass = (r->tls_pass != NULL);
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000
+#define PKCS11_PREFIX "pkcs11:"
+#define PKCS11_PREFIX_LEN (sizeof(PKCS11_PREFIX) - 1)
+    int have_pkcs11_cert = r->tls_cert && !strncmp(r->tls_cert, PKCS11_PREFIX, PKCS11_PREFIX_LEN);
+    int have_pkcs11_key = r->tls_key && !strncmp(r->tls_key, PKCS11_PREFIX, PKCS11_PREFIX_LEN);
+    int have_pkcs11_ca = r->tls_cafile && !strncmp(r->tls_cafile, PKCS11_PREFIX, PKCS11_PREFIX_LEN);
+    int have_pkcs11 = have_pkcs11_cert || have_pkcs11_key || have_pkcs11_ca;
+    if (have_pkcs11 && !r->tls_pass) {
+	report(NULL, LOG_ERR, ~0, "%s %d: PKCS#11 PIN not set.", __func__, __LINE__);
+	tac_exit(EX_CONFIG);
+    }
+    UI_METHOD *ui_method = NULL;
+    if (have_pkcs11) {
+	have_tls_pass = 0;
+	ui_method = UI_create_method("pkcs#11"); // name has no relevance
+	UI_method_set_reader(ui_method, ui_read_pin);
+    }
+#endif
+    if (have_tls_pass) {
 	SSL_CTX_set_default_passwd_cb(ctx, ssl_pem_phrase_cb);
 	SSL_CTX_set_default_passwd_cb_userdata(ctx, r->tls_pass);
     }
@@ -6870,14 +6910,29 @@ static SSL_CTX *ssl_init(struct realm *r, int dtls, int use_tls_psk)
     } else
 #endif
     {
-	if (r->tls_cert && !SSL_CTX_use_certificate_chain_file(ctx, r->tls_cert))
-	    report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_certificate_chain_file", __func__, __LINE__);
-	if ((r->tls_key || r->tls_cert)
-	    && !SSL_CTX_use_PrivateKey_file(ctx, r->tls_key ? r->tls_key : r->tls_cert, SSL_FILETYPE_PEM))
-	    report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_PrivateKey_file", __func__, __LINE__);
-	if (r->tls_key && r->tls_cert && !SSL_CTX_check_private_key(ctx))
-	    report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_check_private_key", __func__, __LINE__);
-
+	// CA
+#if OPENSSL_VERSION_NUMBER >= 0x30000000
+	if (have_pkcs11_ca) {
+	    STACK_OF(X509) *certs = load_chain_from_token(r->tls_cafile);
+	    int num_certs = 0;
+	    if (!num_certs) {
+		report(NULL, LOG_ERR, ~0, "%s %d: CA Certificate not retrieved from store", __func__, __LINE__);
+		tac_exit(EX_CONFIG);
+	    }
+	    X509_STORE *store = SSL_CTX_get_cert_store(ctx);
+	    for (int i = 0; i < num_certs; i++) {
+		X509 *ca = sk_X509_value(certs, i);
+		if (ca) {
+		    if (X509_STORE_add_cert(store, ca) == 1)
+			SSL_CTX_add_client_CA(ctx, ca);
+		    else {
+			// FIXME -- error out skip for != ERR_R_ALREADY_EXISTS ?
+		    }
+		}
+	    }
+	    sk_X509_pop_free(certs, X509_free);
+	} else
+#endif
 	if (r->tls_cafile && !SSL_CTX_load_verify_locations(ctx, r->tls_cafile, NULL)) {
 	    char buf[256];
 	    const char *terr = ERR_error_string(ERR_get_error(), buf);
@@ -6886,26 +6941,91 @@ static SSL_CTX *ssl_init(struct realm *r, int dtls, int use_tls_psk)
 		   terr ? terr : "");
 	    tac_exit(EX_CONFIG);
 	}
-	if (r->tls_cafile)
-	    SSL_CTX_set_client_CA_list(ctx, SSL_load_client_CA_file(r->tls_cafile));
+	if (r->tls_cafile && !have_pkcs11_ca)
+	    SSL_CTX_set_client_CA_list(ctx, SSL_load_client_CA_file(r->tls_cafile)); // mTLS
+
+	// Key
 #if OPENSSL_VERSION_NUMBER >= 0x30000000
-    if (r->tls_pkcs11_key_uri && r->tls_pkcs11_pin) {
-	UI_METHOD *ui_method = UI_create_method("pkcs#11"); // name has no relevance
-	UI_method_set_reader(ui_method, ui_read_pin);
-	EVP_PKEY *pkey = load_key_from_token(r->tls_pkcs11_key_uri, ui_method, r);
-	if (r->tls_pkcs11_cert_uri) {
-	    X509 *cert = load_cert_from_token(r->tls_pkcs11_cert_uri, ui_method, r);
-	    if (SSL_CTX_use_certificate(ctx, cert) <= 0)
-		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_certificate", __func__, __LINE__);
-	    X509_free(cert);
+	EVP_PKEY *pkey = NULL;
+	if (have_pkcs11_key) {
+	    pkey = load_key_from_token(r->tls_key, ui_method, r);
+	    if (!pkey) {
+		report(NULL, LOG_ERR, ~0, "%s %d: Certificate key not retrieved from store", __func__, __LINE__);
+		tac_exit(EX_CONFIG);
+	    }
+	    if (SSL_CTX_use_PrivateKey(ctx, pkey) <= 0) {
+		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_PrivateKey", __func__, __LINE__);
+		tac_exit(EX_CONFIG);
+	    }
+
+	    if (!SSL_CTX_check_private_key(ctx)) {
+		report(NULL, LOG_ERR, ~0, "%s %d: Certificate and key don't match", __func__, __LINE__);
+		tac_exit(EX_CONFIG);
+	    }
+	} else
+#endif
+	if ((r->tls_key || r->tls_cert) && !SSL_CTX_use_PrivateKey_file(ctx, r->tls_key ? r->tls_key : r->tls_cert, SSL_FILETYPE_PEM)) {
+	    report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_PrivateKey_file", __func__, __LINE__);
+	    tac_exit(EX_CONFIG);
 	}
-	if (SSL_CTX_use_PrivateKey(ctx, pkey) <= 0)
-	    report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_PrivateKey", __func__, __LINE__);
-	if (!SSL_CTX_check_private_key(ctx))
-	    report(NULL, LOG_ERR, ~0, "%s %d: Certificate and key don't match", __func__, __LINE__);
-	UI_destroy_method(ui_method);
-	EVP_PKEY_free(pkey);
-    }
+
+	// Cert
+#if OPENSSL_VERSION_NUMBER >= 0x30000000
+	if (have_pkcs11_cert) {
+	    STACK_OF(X509) *certs = load_chain_from_token(r->tls_cert);
+	    if (!certs || sk_X509_num(certs) == 0) {
+		report(NULL, LOG_ERR, ~0, "%s %d: Certificate not retrieved from store", __func__, __LINE__);
+		tac_exit(EX_CONFIG);
+	    }
+	    X509 *leaf = NULL;
+	    for (int i = 1; i < sk_X509_num(certs); i++) {
+		X509 *candidate = sk_X509_value(certs, i);
+		if (X509_check_private_key(candidate, pkey) == 1) {
+		    leaf = candidate;
+		    break;
+		}
+	    }
+	    if (!leaf) {
+		report(NULL, LOG_ERR, ~0, "%s %d: Certificate leaf not retrieved from store", __func__, __LINE__);
+		tac_exit(EX_CONFIG);
+	    }
+	    SSL_CTX_use_certificate(ctx, leaf);
+
+	    for (int i = 0; i < sk_X509_num(certs); i++) {
+		X509 *candidate = sk_X509_value(certs, i);
+		if (!candidate || candidate == leaf) {
+		    continue;
+		}
+		if (SSL_CTX_add1_chain_cert(ctx, candidate) != 1) {
+		    report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_add1_chain_cert", __func__, __LINE__);
+		    // don't call tac_exit() here
+		}
+	    }
+
+	    if (!SSL_CTX_build_cert_chain(ctx, SSL_BUILD_CHAIN_FLAG_UNTRUSTED | SSL_BUILD_CHAIN_FLAG_NO_ROOT)) {
+		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_build_cert_chain", __func__, __LINE__);
+		tac_exit(EX_CONFIG);
+	    }
+	    sk_X509_pop_free(certs, X509_free);
+	} else
+#endif
+	{
+	    if (r->tls_cert && !SSL_CTX_use_certificate_chain_file(ctx, r->tls_cert)) {
+		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_use_certificate_chain_file", __func__, __LINE__);
+		tac_exit(EX_CONFIG);
+	    }
+
+	    if (!SSL_CTX_check_private_key(ctx)) {
+		report(NULL, LOG_ERR, ~0, "%s %d: SSL_CTX_check_private_key", __func__, __LINE__);
+		tac_exit(EX_CONFIG);
+	    }
+	}
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000
+	if (ui_method)
+	    UI_destroy_method(ui_method);
+	if (pkey)
+	    EVP_PKEY_free(pkey);
 #endif
 	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
 	X509_VERIFY_PARAM_set_flags(SSL_CTX_get0_param(ctx), X509_V_FLAG_PARTIAL_CHAIN);

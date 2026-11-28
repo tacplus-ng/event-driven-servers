@@ -484,18 +484,13 @@ struct realm {
     SSL_CTX *dtls;
     SSL_CTX *tls_psk;
     SSL_CTX *dtls_psk;
-    char *tls_cert;
-    char *tls_key;
-    char *tls_pass;
+    char *tls_cert;		// file or pkcs11 url
+    char *tls_key;		// file or pkcs11 url
+    char *tls_pass;		// file or pkcs11 pin
+    char *tls_cafile;		// file or pkcs11 url
     char *tls_ciphers;		// TLS1_2
     char *tls_cipher_suites;	// TLS1_3
     char *tls_psk_dhe_groups;
-#if OPENSSL_VERSION_NUMBER >= 0x30000000
-    char *tls_pkcs11_pin;
-    char *tls_pkcs11_cert_uri;
-    char *tls_pkcs11_key_uri;
-#endif
-    char *tls_cafile;
     int tls_verify_depth;
     int tls_min_version;
     struct sni_list *sni_list;

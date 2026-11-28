@@ -641,7 +641,4 @@ hex				S_hex
 base64				S_base64
 more				S_more
 reuse-port			S_reuse_port
-pkcs11-pin			S_pkcs11_pin
-pkcs11-key-uri			S_pkcs11_key_uri
-pkcs11-cert-uri			S_pkcs11_cert_uri
 #
